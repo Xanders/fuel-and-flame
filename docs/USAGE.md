@@ -12,6 +12,8 @@ For transfer, A calls `issuePair`. B calls `prepareTransfer(vault: nativeVault)`
 
 Repeating activation is idempotent and preserves the prior guest. Preparation renews consumed or expired candidates while retaining pending operations. `newAttempt: true` explicitly abandons the pending candidate for a new deliberate attempt; do not use it automatically after timeout/5xx.
 
+Browser activation and switching clear old projections and close old sockets before sending the request, and invalidate again when it finishes, including failure. A lost response may already have changed the HttpOnly cookie. Concurrent requests fail with `identity_changing`; fetch a fresh snapshot after the operation. Identity changes preserve a suspended session until the application explicitly resumes it.
+
 ## Commands
 
 Construct one `FuelCommand(id, epoch, revision, action)` per semantic intent. Keep it until the outcome is known. Calling `command` again with that same object sends the same body; nested caller mutations cannot alter its stored action. Optional `PendingCommands` saves before the request and removes only after acceptance. Storage durability is the consumer's policy; pending gameplay commands cannot restore a lost RAM session.

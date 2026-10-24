@@ -185,6 +185,7 @@ class FuelClient {
   int get generation => _identityGeneration;
   final _identityChanges = StreamController<void>.broadcast(sync: true);
   bool _closed = false;
+  bool _identityChanging = false;
   FuelClient(
     this.base, {
     http.Client? httpClient,
@@ -211,6 +212,25 @@ class FuelClient {
   }
 
   Future<dynamic> request(
+    String method,
+    String path, {
+    Json? body,
+    Map<String, String>? query,
+    Future<void>? cancel,
+    FuelCredential? authentication,
+  }) async {
+    if (_identityChanging) throw const FuelException('identity_changing');
+    return _request(
+      method,
+      path,
+      body: body,
+      query: query,
+      cancel: cancel,
+      authentication: authentication,
+    );
+  }
+
+  Future<dynamic> _request(
     String method,
     String path, {
     Json? body,
@@ -391,10 +411,7 @@ class FuelClient {
 
   Future<Json> activateTransfer({CredentialVault? vault}) async {
     if (vault == null) {
-      final result =
-          await request('POST', 'auth/pair/activate', body: {}) as Json;
-      _advanceIdentity();
-      return result;
+      return _browserIdentityRequest('auth/pair/activate');
     }
     final candidate = _candidate ?? await vault.read('candidate');
     if (candidate == null) throw const FuelException('missing_candidate');
@@ -410,14 +427,26 @@ class FuelClient {
 
   Future<void> switchPrevious({CredentialVault? vault}) async {
     if (vault == null) {
-      await request('POST', 'auth/switch', body: {});
-      _advanceIdentity();
+      await _browserIdentityRequest('auth/switch');
     } else {
       final previous = await vault.read('previous');
       if (previous == null) throw const FuelException('missing_previous');
       await request('GET', 'progress', authentication: previous);
       await vault.activate(previous);
       credential = previous;
+    }
+  }
+
+  Future<Json> _browserIdentityRequest(String path) async {
+    if (_identityChanging) throw const FuelException('identity_changing');
+    _identityChanging = true;
+    _advanceIdentity();
+    try {
+      return await _request('POST', path, body: {}) as Json;
+    } finally {
+      // Set-Cookie may take effect even when the response body is lost.
+      _identityChanging = false;
+      _advanceIdentity();
     }
   }
 
@@ -491,7 +520,9 @@ class FuelSession {
       if (status == FuelSessionStatus.closed) return;
       _invalidate();
       current = null;
-      status = FuelSessionStatus.idle;
+      if (status != FuelSessionStatus.suspended) {
+        status = FuelSessionStatus.idle;
+      }
     });
   }
 

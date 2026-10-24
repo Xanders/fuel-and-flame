@@ -17,6 +17,82 @@ FuelSnapshot snapshot(String secret, {String revision = '0'}) =>
     });
 
 void main() {
+  for (final path in ['activate', 'switch']) {
+    test(
+      'uncertain browser $path response clears old projection and socket',
+      () async {
+        final client = FuelClient(
+          Uri.parse('https://game.example'),
+          httpClient: MockClient.streaming(
+            (_, _) async => http.StreamedResponse(
+              Stream<List<int>>.error(
+                StateError('body lost after cookie header'),
+              ),
+              200,
+            ),
+          ),
+        );
+        final session = FuelSession(client)..select('room');
+        final channel = TestChannel();
+        final realtime = FuelRealtime(channel, session);
+        await realtime.connect();
+        channel.emit('old account', '0');
+        await expectLater(
+          path == 'activate'
+              ? client.activateTransfer()
+              : client.switchPrevious(),
+          throwsStateError,
+        );
+        expect(session.current, isNull);
+        expect(realtime.generation, isNull);
+        await realtime.close();
+        await session.dispose();
+        client.close();
+      },
+    );
+  }
+  test('identity notification preserves lifecycle suspension', () async {
+    final client = FuelClient(Uri.parse('https://game.example'));
+    final session = FuelSession(client)..select('room');
+    session.accept(snapshot('old'));
+    session.suspend();
+    client.credential = FuelCredential.create();
+    expect(session.status, FuelSessionStatus.suspended);
+    expect(session.current, isNull);
+    await session.dispose();
+    client.close();
+  });
+  test(
+    'browser identity transition fences concurrent requests and completion while backgrounded',
+    () async {
+      final response = Completer<http.Response>();
+      final client = FuelClient(
+        Uri.parse('https://game.example'),
+        httpClient: MockClient((_) => response.future),
+      );
+      final session = FuelSession(client)..select('room');
+      final operation = client.activateTransfer();
+      final blocked = client.request('GET', 'progress');
+      session.suspend();
+      response.complete(
+        http.Response('{"wire_version":1,"data":{"account_id":"new"}}', 200),
+      );
+      await expectLater(
+        blocked,
+        throwsA(
+          isA<FuelException>().having(
+            (e) => e.code,
+            'code',
+            'identity_changing',
+          ),
+        ),
+      );
+      await operation;
+      expect(session.status, FuelSessionStatus.suspended);
+      await session.dispose();
+      client.close();
+    },
+  );
   test(
     'single-record vault atomically keeps both accounts across failure and restart',
     () async {
