@@ -24,7 +24,7 @@ void main() {
       controller.didChangeAppLifecycleState(AppLifecycleState.resumed);
       expect(session.status, FuelSessionStatus.idle);
       controller.dispose();
-      await session.dispose();
+      await tester.runAsync(session.dispose);
       client.close();
     },
   );
