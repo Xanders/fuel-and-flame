@@ -102,14 +102,14 @@ class FuelHttpTransport {
       (_) => fail(const FuelException('cancelled')),
       onError: (Object _) => fail(const FuelException('cancelled')),
     );
-    final request = http.AbortableRequest(
-      method,
-      uri,
-      abortTrigger: abort.future,
-    );
-    if (headers != null) request.headers.addAll(headers);
-    if (body != null) request.body = body;
     try {
+      final request = http.AbortableRequest(
+        method,
+        uri,
+        abortTrigger: abort.future,
+      );
+      if (headers != null) request.headers.addAll(headers);
+      if (body != null) request.body = body;
       _client
           .send(request)
           .then<void>((response) {

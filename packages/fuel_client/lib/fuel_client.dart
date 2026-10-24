@@ -648,7 +648,8 @@ class FuelRealtime {
     _sessionSubscription = session._changes.stream.listen((_) {
       if (!_valid) _disconnect(const FuelException('stale_connection'));
     });
-    await _connection.connect(
+    Object? failure;
+    final ready = await _connection.connect(
       channel,
       onMessage: (json) {
         if (!_valid) {
@@ -669,9 +670,11 @@ class FuelRealtime {
         }
       },
       onError: (Object error) {
+        failure = error;
         _disconnect(error);
       },
     );
+    if (!ready && failure != null) throw failure!;
   }
 
   void input(Json action) {

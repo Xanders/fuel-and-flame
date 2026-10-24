@@ -9,6 +9,26 @@ import 'transport_test.dart' show DelayedChannel;
 void main() {
   final uri = Uri.parse('https://example.test/legacy');
   test(
+    'HTTP setup failure releases admission and leaves no orphan deadline',
+    () async {
+      final transport = FuelHttpTransport(
+        maxPending: 1,
+        timeout: const Duration(milliseconds: 30),
+        client: MockClient((_) async => http.Response('ok', 200)),
+      );
+      try {
+        await expectLater(
+          Future.sync(() => transport.request('BAD METHOD', uri)),
+          throwsArgumentError,
+        );
+        expect((await transport.get(uri)).body, 'ok');
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      } finally {
+        transport.close();
+      }
+    },
+  );
+  test(
     'HTTP pending limit releases on cancellation without closing other requests',
     () async {
       final replies = <Completer<http.StreamedResponse>>[];

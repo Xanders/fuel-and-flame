@@ -18,6 +18,22 @@ FuelSnapshot snapshot(String secret, {String revision = '0'}) =>
 
 void main() {
   test(
+    'canonical realtime propagates a failed ready future without an error callback',
+    () async {
+      final client = FuelClient(Uri.parse('https://game.example'));
+      final session = FuelSession(client)..select('room');
+      final realtime = FuelRealtime(RefusedChannel(), session);
+      try {
+        await expectLater(realtime.connect(), throwsStateError);
+        expect(realtime.generation, isNull);
+      } finally {
+        await realtime.close();
+        await session.dispose();
+        client.close();
+      }
+    },
+  );
+  test(
     'a realtime connection rejected before ready still closes its channel',
     () async {
       final client = FuelClient(Uri.parse('https://game.example'));
@@ -340,6 +356,11 @@ class TestChannel implements WebSocketChannel {
   Future<void> get ready async {}
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class RefusedChannel extends TestChannel {
+  @override
+  Future<void> get ready async => throw StateError('handshake refused');
 }
 
 class TestSink implements WebSocketSink {
