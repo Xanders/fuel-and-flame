@@ -6,7 +6,11 @@ Browser apps use the same-origin Fuel HTTP adapter. Call `bootstrapBrowser`: pre
 
 Native apps implement `CredentialVault` using OS secure storage. `bootstrapNative` saves the generated 32-byte secret before the network write. Network/5xx errors keep that credential; retry never silently replaces the guest.
 
+Use `RecordCredentialVault(read: ..., write: ...)` with one OS-protected value and atomic whole-value writes. It serializes slot changes and stores active/previous in one record, so activation or switching cannot overwrite the sole durable copy of a binding halfway through a swap. Use one vault instance per stored value. Custom vaults must implement the same atomic `activate` contract; separate independent writes are insufficient. Corrupt storage fails explicitly and must never trigger replacement bootstrap.
+
 For transfer, A calls `issuePair`. B calls `prepareTransfer(vault: nativeVault)` (omit vault in browsers), then `requestPair(code)`. A reads `pendingPairs`, compares the same phrase with B and approves the exact ID. B calls `pairStatus`, then `activateTransfer` only after linked. `switchPrevious` returns to the retained prior guest. Progress is not merged. Preserve slots and candidate proof when a response is lost. Secrets are never printed or put in a URL.
+
+Repeating activation is idempotent and preserves the prior guest. Preparation renews consumed or expired candidates while retaining pending operations. `newAttempt: true` explicitly abandons the pending candidate for a new deliberate attempt; do not use it automatically after timeout/5xx.
 
 ## Commands
 
@@ -21,6 +25,8 @@ Timeout/unavailable may mean committed. Retry the exact command; never generate 
 Call `poll` in your connection loop; handle errors with a bounded backoff. The session object intentionally does not start an unbounded background retry loop. On resume, call poll for the current snapshot before enabling input.
 
 `FuelRealtime` accepts a caller-created `WebSocketChannel`, so browser cookies and native header transports remain platform choices. Wait for `connect` and an accepted snapshot before sending transient input. Do not replay inputs after disconnect. Supply onError and reconnect explicitly. Message queues and release/device-specific network policy remain the application's responsibility.
+
+Identity changes immediately clear the previous viewer projection and cursor. Realtime uses the same identity/session generation fences as polling; suspend, reselect, loss or identity change closes the old channel. Normal completion/errors clear readiness and notify onError; only a fresh channel and accepted snapshot allow further input. An unchanged valid snapshot confirms resume without replaying presentation events.
 
 ## Flutter and Flame
 

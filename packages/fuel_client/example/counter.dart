@@ -9,6 +9,13 @@ class DemoVault implements CredentialVault {
   Future<void> write(String slot, FuelCredential value) async {
     _slots[slot] = value;
   }
+
+  @override
+  Future<void> activate(FuelCredential value) async {
+    final old = _slots['active'];
+    if (old != null && old.id != value.id) _slots['previous'] = old;
+    _slots['active'] = value;
+  }
 }
 
 Future<void> main(List<String> args) async {

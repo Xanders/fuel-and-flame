@@ -147,6 +147,14 @@ void main() {
 
 class TestVault implements CredentialVault {
   final slots = <String, FuelCredential>{};
+  bool failActivate = false;
+  Future<void> activate(FuelCredential value) async {
+    if (failActivate) throw StateError('storage failed');
+    final old = slots['active'];
+    if (old != null && old.id != value.id) slots['previous'] = old;
+    slots['active'] = value;
+  }
+
   @override
   Future<FuelCredential?> read(String slot) async => slots[slot];
   @override

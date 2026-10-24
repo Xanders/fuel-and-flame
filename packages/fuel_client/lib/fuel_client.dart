@@ -59,6 +59,82 @@ class FuelCredential {
 abstract interface class CredentialVault {
   Future<FuelCredential?> read(String slot);
   Future<void> write(String slot, FuelCredential credential);
+
+  /// Atomically replace active and preserve a different prior active as previous.
+  /// Failure leaves both durable credentials readable. Store them in one secure record.
+  Future<void> activate(FuelCredential credential);
+}
+
+/// Connect one instance to one OS-protected value with atomic whole-value writes.
+/// This shares slot/activation handling without choosing a platform plugin.
+class RecordCredentialVault implements CredentialVault {
+  final Future<String?> Function() _read;
+  final Future<void> Function(String) _write;
+  Future<void> _tail = Future.value();
+  RecordCredentialVault({
+    required Future<String?> Function() read,
+    required Future<void> Function(String) write,
+  }) : _read = read,
+       _write = write;
+
+  Future<T> _locked<T>(Future<T> Function() action) {
+    final result = Completer<T>();
+    _tail = _tail.then((_) async {
+      try {
+        result.complete(await action());
+      } catch (error, stack) {
+        result.completeError(error, stack);
+      }
+    });
+    return result.future;
+  }
+
+  Future<Map<String, FuelCredential>> _load() async {
+    final text = await _read();
+    if (text == null) return {};
+    final json = jsonDecode(text);
+    if (json is! Json || json['version'] != 1 || json['slots'] is! Json)
+      throw const FormatException('invalid_vault');
+    final result = <String, FuelCredential>{};
+    for (final entry in (json['slots'] as Json).entries) {
+      final value = entry.value;
+      if (value is! Json ||
+          value['id'] is! String ||
+          value['secret'] is! String)
+        throw const FormatException('invalid_vault');
+      result[entry.key] = FuelCredential(
+        value['id'] as String,
+        value['secret'] as String,
+      );
+    }
+    return result;
+  }
+
+  Future<void> _save(Map<String, FuelCredential> slots) => _write(
+    jsonEncode({
+      'version': 1,
+      'slots': slots.map((key, value) => MapEntry(key, value.toStorage())),
+    }),
+  );
+
+  @override
+  Future<FuelCredential?> read(String slot) =>
+      _locked(() async => (await _load())[slot]);
+  @override
+  Future<void> write(String slot, FuelCredential credential) =>
+      _locked(() async {
+        final slots = await _load();
+        slots[slot] = credential;
+        await _save(slots);
+      });
+  @override
+  Future<void> activate(FuelCredential credential) => _locked(() async {
+    final slots = await _load();
+    final old = slots['active'];
+    if (old != null && old.id != credential.id) slots['previous'] = old;
+    slots['active'] = credential;
+    await _save(slots);
+  });
 }
 
 class FuelCommand {
@@ -105,7 +181,9 @@ class FuelClient {
   final PendingCommands? pending;
   FuelCredential? _credential;
   FuelCredential? _candidate;
-  int generation = 0;
+  int _identityGeneration = 0;
+  int get generation => _identityGeneration;
+  final _identityChanges = StreamController<void>.broadcast(sync: true);
   bool _closed = false;
   FuelClient(
     this.base, {
@@ -124,7 +202,12 @@ class FuelClient {
 
   set credential(FuelCredential? value) {
     _credential = value;
-    generation++;
+    _advanceIdentity();
+  }
+
+  void _advanceIdentity() {
+    _identityGeneration++;
+    if (!_identityChanges.isClosed) _identityChanges.add(null);
   }
 
   Future<dynamic> request(
@@ -269,11 +352,39 @@ class FuelClient {
             authentication: _candidate,
           )
           as Json;
-  Future<void> prepareTransfer({CredentialVault? vault}) async {
+  Future<void> prepareTransfer({
+    CredentialVault? vault,
+    bool newAttempt = false,
+  }) async {
     if (vault == null) {
-      await request('GET', 'auth/pair/prepare');
+      await request(
+        'GET',
+        'auth/pair/prepare',
+        query: {if (newAttempt) 'new': 'true'},
+      );
     } else {
-      _candidate = await vault.read('candidate') ?? FuelCredential.create();
+      var candidate = await vault.read('candidate');
+      final previous = await vault.read('previous');
+      var renew =
+          newAttempt ||
+          candidate == null ||
+          candidate.id == _credential?.id ||
+          candidate.id == previous?.id;
+      if (!renew) {
+        try {
+          final result =
+              await request(
+                    'GET',
+                    'auth/pair/status',
+                    authentication: candidate,
+                  )
+                  as Json;
+          renew = ['expired', 'cancelled'].contains(result['status']);
+        } on FuelException catch (error) {
+          if (!['unauthorized', 'invalid_code'].contains(error.code)) rethrow;
+        }
+      }
+      _candidate = renew ? FuelCredential.create() : candidate;
       await vault.write('candidate', _candidate!);
     }
   }
@@ -282,7 +393,7 @@ class FuelClient {
     if (vault == null) {
       final result =
           await request('POST', 'auth/pair/activate', body: {}) as Json;
-      generation++;
+      _advanceIdentity();
       return result;
     }
     final candidate = _candidate ?? await vault.read('candidate');
@@ -292,8 +403,7 @@ class FuelClient {
             as Json;
     if (result['status'] != 'linked')
       throw const FuelException('confirmation_required');
-    if (_credential != null) await vault.write('previous', _credential!);
-    await vault.write('active', candidate);
+    await vault.activate(candidate);
     credential = candidate;
     return result;
   }
@@ -301,13 +411,12 @@ class FuelClient {
   Future<void> switchPrevious({CredentialVault? vault}) async {
     if (vault == null) {
       await request('POST', 'auth/switch', body: {});
-      generation++;
+      _advanceIdentity();
     } else {
       final previous = await vault.read('previous');
       if (previous == null) throw const FuelException('missing_previous');
       await request('GET', 'progress', authentication: previous);
-      if (_credential != null) await vault.write('previous', _credential!);
-      await vault.write('active', previous);
+      await vault.activate(previous);
       credential = previous;
     }
   }
@@ -357,7 +466,8 @@ class FuelClient {
 
   void close() {
     _closed = true;
-    generation++;
+    _advanceIdentity();
+    unawaited(_identityChanges.close());
     _http.close();
   }
 }
@@ -374,9 +484,19 @@ class FuelSession {
   int _generation = 0;
   Future<void>? _poll;
   Completer<void>? _cancel;
-  FuelSession(this.client);
+  final _changes = StreamController<void>.broadcast(sync: true);
+  late final StreamSubscription<void> _identitySubscription;
+  FuelSession(this.client) {
+    _identitySubscription = client._identityChanges.stream.listen((_) {
+      if (status == FuelSessionStatus.closed) return;
+      _invalidate();
+      current = null;
+      status = FuelSessionStatus.idle;
+    });
+  }
 
   void select(String id) {
+    if (status == FuelSessionStatus.closed) throw const FuelException('closed');
     _invalidate();
     _id = id;
     current = null;
@@ -385,6 +505,7 @@ class FuelSession {
 
   void _invalidate() {
     _generation++;
+    _changes.add(null);
     if (!(_cancel?.isCompleted ?? true)) _cancel!.complete();
     _cancel = null;
     _poll = null;
@@ -421,8 +542,10 @@ class FuelSession {
         if (gen != _generation || identity != client.generation) return;
         if (gen == _generation &&
             identity == client.generation &&
-            error.code == 'session_lost')
+            error.code == 'session_lost') {
+          _invalidate();
           status = FuelSessionStatus.lost;
+        }
         rethrow;
       } catch (_) {
         if (gen != _generation || identity != client.generation) return;
@@ -439,13 +562,24 @@ class FuelSession {
   }
 
   void accept(FuelSnapshot snapshot) {
-    if (status == FuelSessionStatus.closed || snapshot.sessionId != _id) return;
+    if ([
+          FuelSessionStatus.closed,
+          FuelSessionStatus.suspended,
+          FuelSessionStatus.lost,
+        ].contains(status) ||
+        snapshot.sessionId != _id)
+      return;
     final old = current;
     if (old != null && old.epoch != snapshot.epoch) {
+      _invalidate();
       status = FuelSessionStatus.lost;
       throw const FuelException('session_lost');
     }
-    if (old != null && snapshot.revision <= old.revision) return;
+    if (old != null && snapshot.revision < old.revision) return;
+    if (old != null && snapshot.revision == old.revision) {
+      status = FuelSessionStatus.connected;
+      return;
+    }
     current = snapshot;
     status = FuelSessionStatus.connected;
     _snapshots.add(snapshot);
@@ -465,6 +599,8 @@ class FuelSession {
   Future<void> dispose() async {
     _invalidate();
     status = FuelSessionStatus.closed;
+    await _identitySubscription.cancel();
+    await _changes.close();
     await _snapshots.close();
   }
 }
@@ -475,33 +611,67 @@ class FuelRealtime {
   final WebSocketChannel channel;
   final FuelSession session;
   StreamSubscription<dynamic>? _subscription;
+  StreamSubscription<void>? _sessionSubscription;
   String? generation;
   BigInt _sequence = BigInt.zero;
+  int? _sessionGeneration;
+  int? _identityGeneration;
+  bool _closed = false;
+  Future<void>? _cleanup;
+  void Function(Object)? _onError;
   FuelRealtime(this.channel, this.session);
   Future<void> connect({void Function(Object)? onError}) async {
-    await channel.ready;
+    if (_closed || _sessionGeneration != null)
+      throw const FuelException('closed');
+    _onError = onError;
+    _sessionGeneration = session._generation;
+    _identityGeneration = session.client.generation;
+    _sessionSubscription = session._changes.stream.listen((_) {
+      if (!_valid) _disconnect(const FuelException('stale_connection'));
+    });
+    try {
+      await channel.ready;
+    } catch (error) {
+      _disconnect(error);
+      rethrow;
+    }
+    if (!_valid) {
+      _disconnect(const FuelException('stale_connection'));
+      return;
+    }
     _subscription = channel.stream.listen(
       (message) {
+        if (!_valid) {
+          _disconnect(const FuelException('stale_connection'));
+          return;
+        }
         try {
           if (message is! String || message.length > 1024 * 1024)
             throw const FuelException('too_large');
           final json = jsonDecode(message) as Json;
           if (json['wire_version'] != 1)
             throw const FuelException('unsupported_version');
+          final snapshot = FuelSnapshot.fromJson(json['data'] as Json);
+          if (snapshot.sessionId != session._id)
+            throw const FuelException('invalid_snapshot');
+          session.accept(snapshot);
           generation = json['generation'] as String;
-          session.accept(FuelSnapshot.fromJson(json['data'] as Json));
         } catch (error) {
-          onError?.call(error);
+          _disconnect(error);
         }
       },
       onError: (Object error) {
-        onError?.call(error);
+        _disconnect(error);
       },
+      onDone: () => _disconnect(const FuelException('disconnected')),
     );
   }
 
   void input(Json action) {
-    if (generation == null || session.current == null)
+    if (!_valid ||
+        generation == null ||
+        session.current == null ||
+        session.status != FuelSessionStatus.connected)
       throw const FuelException('not_connected');
     _sequence += BigInt.one;
     channel.sink.add(
@@ -513,8 +683,33 @@ class FuelRealtime {
     );
   }
 
-  Future<void> close() async {
-    await _subscription?.cancel();
-    await channel.sink.close();
+  bool get _valid =>
+      !_closed &&
+      _sessionGeneration == session._generation &&
+      _identityGeneration == session.client.generation &&
+      ![
+        FuelSessionStatus.suspended,
+        FuelSessionStatus.lost,
+        FuelSessionStatus.closed,
+      ].contains(session.status);
+
+  void _disconnect(Object error, {bool notify = true}) {
+    if (_closed) return;
+    final wasCurrent = _valid;
+    _closed = true;
+    generation = null;
+    if (wasCurrent && session.status == FuelSessionStatus.connected)
+      session.status = FuelSessionStatus.idle;
+    _cleanup = () async {
+      await _subscription?.cancel();
+      await _sessionSubscription?.cancel();
+      await channel.sink.close();
+    }();
+    if (notify) _onError?.call(error);
+  }
+
+  Future<void> close() {
+    _disconnect(const FuelException('closed'), notify: false);
+    return _cleanup ?? Future.value();
   }
 }
