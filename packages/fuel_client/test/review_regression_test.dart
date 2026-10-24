@@ -17,6 +17,39 @@ FuelSnapshot snapshot(String secret, {String revision = '0'}) =>
     });
 
 void main() {
+  test(
+    'realtime cannot reconnect during a pending browser identity change',
+    () async {
+      final response = Completer<http.Response>();
+      final client = FuelClient(
+        Uri.parse('https://game.example'),
+        httpClient: MockClient((_) => response.future),
+      );
+      final session = FuelSession(client)..select('room');
+      final operation = client.activateTransfer();
+      final channel = TestChannel();
+      final realtime = FuelRealtime(channel, session);
+      await expectLater(
+        realtime.connect(),
+        throwsA(
+          isA<FuelException>().having(
+            (e) => e.code,
+            'code',
+            'identity_changing',
+          ),
+        ),
+      );
+      channel.emit('old account', '0');
+      expect(session.current, isNull);
+      expect(() => realtime.input({'x': 1}), throwsA(isA<FuelException>()));
+      response.complete(http.Response('{"wire_version":1,"data":{}}', 200));
+      await operation;
+      await realtime.close();
+      await session.dispose();
+      client.close();
+    },
+  );
+
   for (final path in ['activate', 'switch']) {
     test(
       'uncertain browser $path response clears old projection and socket',

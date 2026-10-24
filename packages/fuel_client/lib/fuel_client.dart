@@ -593,7 +593,9 @@ class FuelSession {
   }
 
   void accept(FuelSnapshot snapshot) {
-    if ([
+    if (client._identityChanging ||
+        client._closed ||
+        [
           FuelSessionStatus.closed,
           FuelSessionStatus.suspended,
           FuelSessionStatus.lost,
@@ -654,6 +656,14 @@ class FuelRealtime {
   Future<void> connect({void Function(Object)? onError}) async {
     if (_closed || _sessionGeneration != null)
       throw const FuelException('closed');
+    if (session.client._identityChanging || session.client._closed) {
+      final error = FuelException(
+        session.client._closed ? 'closed' : 'identity_changing',
+      );
+      _disconnect(error, notify: false);
+      await close();
+      throw error;
+    }
     _onError = onError;
     _sessionGeneration = session._generation;
     _identityGeneration = session.client.generation;
@@ -716,6 +726,8 @@ class FuelRealtime {
 
   bool get _valid =>
       !_closed &&
+      !session.client._closed &&
+      !session.client._identityChanging &&
       _sessionGeneration == session._generation &&
       _identityGeneration == session.client.generation &&
       ![

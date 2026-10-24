@@ -28,6 +28,29 @@ await session.poll();
 
 Native apps use `bootstrapNative(vault)` with an OS-backed `CredentialVault`. Secrets must not be stored in ordinary preferences or logs.
 
+## Install optional bridges from Git
+
+Until registry publication, an external Flutter app must pin both its bridge and the core override to the same reviewed tag or immutable commit. The development workspace's sibling resolution does not carry into a consuming app.
+
+```yaml
+dependencies:
+  flutter:
+    sdk: flutter
+  fuel_flutter:
+    git:
+      url: https://github.com/Xanders/fuel-and-flame.git
+      ref: v0.1.0
+      path: packages/fuel_flutter
+dependency_overrides:
+  fuel_client:
+    git:
+      url: https://github.com/Xanders/fuel-and-flame.git
+      ref: v0.1.0
+      path: packages/fuel_client
+```
+
+For Flame use the same Git mapping with package name `fuel_flame` and path `packages/fuel_flame`. If the app imports `fuel_client` directly, also declare it in `dependencies` with that core Git mapping. The override keeps transitive bridge dependencies on the same source.
+
 ## Development
 
 The validated toolchain is Flutter 3.44.0 / Dart 3.12.0 and Flame 1.38.2. The workspace lockfile records exact test dependencies.

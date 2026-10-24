@@ -12,7 +12,7 @@ For transfer, A calls `issuePair`. B calls `prepareTransfer(vault: nativeVault)`
 
 Repeating activation is idempotent and preserves the prior guest. Preparation renews consumed or expired candidates while retaining pending operations. `newAttempt: true` explicitly abandons the pending candidate for a new deliberate attempt; do not use it automatically after timeout/5xx.
 
-Browser activation and switching clear old projections and close old sockets before sending the request, and invalidate again when it finishes, including failure. A lost response may already have changed the HttpOnly cookie. Concurrent requests fail with `identity_changing`; fetch a fresh snapshot after the operation. Identity changes preserve a suspended session until the application explicitly resumes it.
+Browser activation and switching clear old projections and close old sockets before sending the request, and invalidate again when it finishes, including failure. A lost response may already have changed the HttpOnly cookie. Concurrent requests and new realtime connections fail with `identity_changing`; fetch a fresh snapshot after the operation. Identity changes preserve a suspended session until the application explicitly resumes it.
 
 ## Commands
 
