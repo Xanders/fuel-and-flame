@@ -1,0 +1,14 @@
+name: fuel_flutter
+description: Optional Flutter lifecycle and input helpers for Fuel.
+version: 0.1.0
+repository: https://github.com/Xanders/fuel-and-flame
+resolution: workspace
+environment:
+  sdk: ^3.12.0
+dependencies:
+  flutter:
+    sdk: flutter
+  fuel_client: ^0.1.0
+dev_dependencies:
+  flutter_test:
+    sdk: flutter

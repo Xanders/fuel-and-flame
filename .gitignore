@@ -1,0 +1,5 @@
+/AGENTS_LOCAL.md
+**/.dart_tool/
+**/build/
+/.env
+**/coverage/

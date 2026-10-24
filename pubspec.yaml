@@ -1,0 +1,8 @@
+name: fuel_and_flame_workspace
+publish_to: none
+environment:
+  sdk: ^3.12.0
+workspace:
+  - packages/fuel_client
+  - packages/fuel_flutter
+  - packages/fuel_flame
