@@ -18,6 +18,41 @@ FuelSnapshot snapshot(String secret, {String revision = '0'}) =>
 
 void main() {
   test(
+    'a realtime connection rejected before ready still closes its channel',
+    () async {
+      final client = FuelClient(Uri.parse('https://game.example'));
+      final session = FuelSession(client)..select('room');
+      client.close();
+      final channel = TestChannel();
+      final realtime = FuelRealtime(channel, session);
+      await expectLater(realtime.connect(), throwsA(isA<FuelException>()));
+      await channel.sink.done.timeout(const Duration(milliseconds: 50));
+      await realtime.close();
+      await session.dispose();
+    },
+  );
+
+  test(
+    'a reentrant identity change during snapshot delivery cannot restore readiness',
+    () async {
+      final client = FuelClient(Uri.parse('https://game.example'));
+      final session = FuelSession(client)..select('room');
+      final listener = session.snapshots.listen(
+        (_) => client.credential = FuelCredential.create(),
+      );
+      final channel = TestChannel();
+      final realtime = FuelRealtime(channel, session);
+      await realtime.connect();
+      channel.emit('old identity', '1');
+      expect(realtime.generation, isNull);
+      expect(session.current, isNull);
+      await realtime.close();
+      await listener.cancel();
+      await session.dispose();
+      client.close();
+    },
+  );
+  test(
     'realtime cannot reconnect during a pending browser identity change',
     () async {
       final response = Completer<http.Response>();

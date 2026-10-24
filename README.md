@@ -4,7 +4,7 @@ MIT-licensed companion packages for the [Fuel Crystal backend](https://github.co
 
 | Package | Role | Runtime dependencies |
 |---|---|---|
-| fuel_client | Pure Dart API, credentials/vault contract, exact commands, polling/recovery, realtime inputs | http, web_socket_channel |
+| fuel_client | Pure Dart API, credentials/vault contract, exact commands, polling/recovery, bounded HTTP and realtime transport | http, web_socket_channel |
 | fuel_flutter | Optional application lifecycle and input rearm helpers | Flutter, fuel_client |
 | fuel_flame | Optional snapshot/event presentation components | Flame, fuel_client |
 
@@ -39,13 +39,13 @@ dependencies:
   fuel_flutter:
     git:
       url: https://github.com/Xanders/fuel-and-flame.git
-      ref: v0.1.0
+      ref: v0.2.0
       path: packages/fuel_flutter
 dependency_overrides:
   fuel_client:
     git:
       url: https://github.com/Xanders/fuel-and-flame.git
-      ref: v0.1.0
+      ref: v0.2.0
       path: packages/fuel_client
 ```
 
@@ -53,7 +53,7 @@ For Flame use the same Git mapping with package name `fuel_flame` and path `pack
 
 ## Development
 
-The validated toolchain is Flutter 3.44.0 / Dart 3.12.0 and Flame 1.38.2. The workspace lockfile records exact test dependencies.
+The validated toolchain is Flutter 3.44.8 / Dart 3.12.2 and Flame 1.38.2. The workspace lockfile records exact test dependencies.
 
 ```sh
 flutter pub get

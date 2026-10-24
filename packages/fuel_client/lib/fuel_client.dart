@@ -7,6 +7,8 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+part 'src/transport.dart';
+
 typedef Json = Map<String, dynamic>;
 
 class FuelException implements Exception {
@@ -176,7 +178,7 @@ abstract interface class PendingCommands {
 
 class FuelClient {
   final Uri base;
-  final http.Client _http;
+  final FuelHttpTransport _http;
   final Duration timeout;
   final PendingCommands? pending;
   FuelCredential? _credential;
@@ -191,7 +193,7 @@ class FuelClient {
     http.Client? httpClient,
     this.timeout = const Duration(seconds: 20),
     this.pending,
-  }) : _http = httpClient ?? http.Client() {
+  }) : _http = FuelHttpTransport(client: httpClient, timeout: timeout) {
     if (base.scheme != 'https' &&
         !(base.scheme == 'http' &&
             ['127.0.0.1', 'localhost'].contains(base.host))) {
@@ -240,53 +242,29 @@ class FuelClient {
   }) async {
     if (_closed) throw const FuelException('closed');
     final gen = generation;
-    final abort = Completer<void>();
-    cancel?.then((_) {
-      if (!abort.isCompleted) abort.complete();
-    });
-    final timer = Timer(timeout, () {
-      if (!abort.isCompleted) abort.complete();
-    });
     final uri = base.resolve('/fuel/v1/$path').replace(queryParameters: query);
-    final request = http.AbortableRequest(
-      method,
-      uri,
-      abortTrigger: abort.future,
-    );
-    request.headers.addAll({
-      'Content-Type': 'application/json',
-      'X-Fuel-Version': '1',
-    });
+    final headers = {'Content-Type': 'application/json', 'X-Fuel-Version': '1'};
     final credential = authentication ?? _credential;
     if (credential != null)
-      request.headers['Authorization'] =
-          'Fuel ${credential.id}:${credential.secret}';
-    if (body != null) request.body = jsonEncode(body);
-    try {
-      final response = await _http.send(request).timeout(timeout);
-      final bytes = BytesBuilder(copy: false);
-      await for (final chunk in response.stream.timeout(timeout)) {
-        if (bytes.length + chunk.length > 1024 * 1024) {
-          if (!abort.isCompleted) abort.complete();
-          throw const FuelException('too_large');
-        }
-        bytes.add(chunk);
-      }
-      if (_closed || gen != generation || abort.isCompleted)
-        throw const FuelException('cancelled');
-      final json = jsonDecode(utf8.decode(bytes.takeBytes())) as Json;
-      if (json['wire_version'] != 1)
-        throw const FuelException('unsupported_version');
-      if (response.statusCode != 200 || json.containsKey('error')) {
-        throw FuelException(
-          json['error'] as String? ?? 'unavailable',
-          response.statusCode,
-        );
-      }
-      return json['data'];
-    } finally {
-      timer.cancel();
+      headers['Authorization'] = 'Fuel ${credential.id}:${credential.secret}';
+    final response = await _http.request(
+      method,
+      uri,
+      headers: headers,
+      body: body == null ? null : jsonEncode(body),
+      cancel: cancel,
+    );
+    if (_closed || gen != generation) throw const FuelException('cancelled');
+    final json = jsonDecode(utf8.decode(response.bodyBytes)) as Json;
+    if (json['wire_version'] != 1)
+      throw const FuelException('unsupported_version');
+    if (response.statusCode != 200 || json.containsKey('error')) {
+      throw FuelException(
+        json['error'] as String? ?? 'unavailable',
+        response.statusCode,
+      );
     }
+    return json['data'];
   }
 
   Future<Json> bootstrapNative(CredentialVault vault) async {
@@ -643,7 +621,7 @@ class FuelSession {
 class FuelRealtime {
   final WebSocketChannel channel;
   final FuelSession session;
-  StreamSubscription<dynamic>? _subscription;
+  final _connection = FuelConnection();
   StreamSubscription<void>? _sessionSubscription;
   String? generation;
   BigInt _sequence = BigInt.zero;
@@ -670,32 +648,21 @@ class FuelRealtime {
     _sessionSubscription = session._changes.stream.listen((_) {
       if (!_valid) _disconnect(const FuelException('stale_connection'));
     });
-    try {
-      await channel.ready;
-    } catch (error) {
-      _disconnect(error);
-      rethrow;
-    }
-    if (!_valid) {
-      _disconnect(const FuelException('stale_connection'));
-      return;
-    }
-    _subscription = channel.stream.listen(
-      (message) {
+    await _connection.connect(
+      channel,
+      onMessage: (json) {
         if (!_valid) {
           _disconnect(const FuelException('stale_connection'));
           return;
         }
         try {
-          if (message is! String || message.length > 1024 * 1024)
-            throw const FuelException('too_large');
-          final json = jsonDecode(message) as Json;
           if (json['wire_version'] != 1)
             throw const FuelException('unsupported_version');
           final snapshot = FuelSnapshot.fromJson(json['data'] as Json);
           if (snapshot.sessionId != session._id)
             throw const FuelException('invalid_snapshot');
           session.accept(snapshot);
+          if (!_valid) return;
           generation = json['generation'] as String;
         } catch (error) {
           _disconnect(error);
@@ -704,7 +671,6 @@ class FuelRealtime {
       onError: (Object error) {
         _disconnect(error);
       },
-      onDone: () => _disconnect(const FuelException('disconnected')),
     );
   }
 
@@ -715,13 +681,11 @@ class FuelRealtime {
         session.status != FuelSessionStatus.connected)
       throw const FuelException('not_connected');
     _sequence += BigInt.one;
-    channel.sink.add(
-      jsonEncode({
-        'epoch': session.current!.epoch,
-        'sequence': '$_sequence',
-        'action': action,
-      }),
-    );
+    _connection.send({
+      'epoch': session.current!.epoch,
+      'sequence': '$_sequence',
+      'action': action,
+    });
   }
 
   bool get _valid =>
@@ -744,11 +708,22 @@ class FuelRealtime {
     if (wasCurrent && session.status == FuelSessionStatus.connected)
       session.status = FuelSessionStatus.idle;
     _cleanup = () async {
-      await _subscription?.cancel();
+      await _connection.close();
+      if (_sessionGeneration == null) {
+        await _boundedCleanup(
+          () => channel.sink.close(),
+          const Duration(seconds: 3),
+        );
+      }
       await _sessionSubscription?.cancel();
-      await channel.sink.close();
     }();
-    if (notify) _onError?.call(error);
+    if (notify) {
+      try {
+        _onError?.call(error);
+      } catch (_) {
+        /* Cleanup is already fenced. */
+      }
+    }
   }
 
   Future<void> close() {
