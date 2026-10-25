@@ -86,15 +86,16 @@ class FuelGameController {
 
   Future<void> start({CredentialVault? vault, bool newGuest = false}) async {
     if (_status == FuelGameStatus.closed) throw const FuelException('closed');
-    if (vault == null) {
-      await client.bootstrapBrowser(newGuest: newGuest);
-    } else {
-      await client.bootstrapNative(vault, newGuest: newGuest);
-    }
-    if (_status == FuelGameStatus.closed)
+    if (_status == FuelGameStatus.suspended)
       throw const FuelException('cancelled');
-    if (client.account == null) return;
+    final login = vault == null
+        ? client.bootstrapBrowser(newGuest: newGuest)
+        : client.bootstrapNative(vault, newGuest: newGuest);
+    // Bootstrap synchronously invalidates the old identity before yielding.
     final token = _generation, identity = client.generation;
+    await login;
+    _guard(token, identity);
+    if (client.account == null) return;
     _status = FuelGameStatus.connecting;
     _updates.notify();
     try {
@@ -169,6 +170,12 @@ class FuelGameController {
       if (rooms.length > 1)
         throw const FuelException('session_selection_required');
       if (rooms.isEmpty) {
+        _detach();
+        session.select('');
+        session._id = null;
+        roomCode = '';
+        mode = '';
+        _receiptCursor = BigInt.zero;
         _status = FuelGameStatus.idle;
         _updates.notify();
         return;

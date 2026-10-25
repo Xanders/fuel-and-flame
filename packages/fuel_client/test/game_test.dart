@@ -18,6 +18,101 @@ Json world() => {
 };
 
 void main() {
+  test(
+    'empty membership recovery clears the old room before a deliberate new session',
+    () async {
+      var creates = 0;
+      final channels = <TestChannel>[];
+      final client = FuelClient(
+        Uri.parse('https://game.example'),
+        httpClient: MockClient((request) async {
+          if (request.url.path.endsWith('/account'))
+            return fuelReply(accountData(accountA));
+          if (request.url.path.endsWith('/sessions/mine') ||
+              request.url.path.endsWith('/operations'))
+            return fuelReply([]);
+          if (request.url.path.endsWith('/sessions')) {
+            creates++;
+            return fuelReply({'session_id': 'room'});
+          }
+          return fuelReply(world());
+        }),
+      );
+      await client.refreshAccount();
+      final game = FuelGameController(
+        client,
+        socketFactory: (_, _) {
+          final next = TestChannel();
+          channels.add(next);
+          return next;
+        },
+      );
+      await game.create('solo');
+      channels.single.emit('private old state', '0');
+      await game.recoverRoom();
+      expect(game.sessionId, isNull);
+      expect(game.current, isNull);
+      expect(game.mode, isEmpty);
+      expect(game.roomCode, isEmpty);
+      expect(game.status, FuelGameStatus.idle);
+      await game.create('solo');
+      expect(creates, 2);
+      await game.dispose();
+      client.close();
+    },
+  );
+
+  test(
+    'suspending during login cannot open a session socket until resume',
+    () async {
+      final entered = Completer<void>(), release = Completer<void>();
+      var sockets = 0;
+      final client = FuelClient(
+        Uri.parse('https://game.example'),
+        journal: journal({}),
+        httpClient: MockClient((request) async {
+          if (request.url.path.endsWith('/auth/prepare')) {
+            entered.complete();
+            await release.future;
+          }
+          if (request.url.path.endsWith('/account'))
+            return fuelReply(accountData(accountA));
+          if (request.url.path.endsWith('/operations')) return fuelReply([]);
+          if (request.url.path.endsWith('/sessions/mine'))
+            return fuelReply([
+              {'session_id': 'room'},
+            ]);
+          if (request.url.path.endsWith('/sessions/room'))
+            return fuelReply(world());
+          return fuelReply({'account_id': accountA});
+        }),
+      );
+      final game = FuelGameController(
+        client,
+        socketFactory: (_, _) {
+          sockets++;
+          return TestChannel();
+        },
+      );
+      final started = game.start();
+      await entered.future;
+      game.suspend();
+      final assertion = expectLater(
+        started,
+        throwsA(
+          isA<FuelException>().having((e) => e.code, 'code', 'cancelled'),
+        ),
+      );
+      release.complete();
+      await assertion;
+      expect(game.status, FuelGameStatus.suspended);
+      expect(game.session.status, FuelSessionStatus.suspended);
+      expect(sockets, 0);
+      await game.dispose();
+      client.close();
+    },
+  );
+
   for (final failedPath in ['operations', 'sessions/mine'])
     test(
       'startup exposes a retry state when $failedPath fails after login',
