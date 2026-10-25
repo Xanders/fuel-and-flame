@@ -1,8 +1,29 @@
 import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fuel_flame/fuel_flame.dart';
+import 'package:fuel_client/fuel_client.dart';
 
 void main() {
+  test('queued presentation cannot cross an account generation', () async {
+    final fuel = FuelClient(Uri.parse('https://game.example'));
+    final events = StreamController<int>.broadcast(sync: true);
+    final played = <int>[];
+    final component = FuelEventComponent<int>(
+      events.stream,
+      played.add,
+      owner: fuel,
+      onResync: () {},
+    );
+    component.onMount();
+    events.add(1);
+    fuel.credential = FuelCredential.create();
+    events.add(2);
+    component.update(.1);
+    expect(played, [2]);
+    component.onRemove();
+    await events.close();
+    fuel.close();
+  });
   test(
     'event overflow requests resync and never silently drops a reliable event',
     () async {

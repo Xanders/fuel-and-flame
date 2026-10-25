@@ -4,8 +4,8 @@ MIT-licensed companion packages for the [Fuel Crystal backend](https://github.co
 
 | Package | Role | Runtime dependencies |
 |---|---|---|
-| fuel_client | Pure Dart API, credentials/vault contract, exact commands, polling/recovery, bounded HTTP and realtime transport | http, web_socket_channel |
-| fuel_flutter | Optional application lifecycle and input rearm helpers | Flutter, fuel_client |
+| fuel_client | Account/identity owner, verified vault/journal, durable actions/recovery, session controller and transport | crypto, http, web, web_socket_channel |
+| fuel_flutter | Optional notifier/lifecycle composition and input rearm | Flutter, fuel_client |
 | fuel_flame | Optional snapshot/event presentation components | Flame, fuel_client |
 
 The core Dart SDK has no Flutter or Flame dependency. The monorepo development workspace includes both optional packages, so its full test workflow requires Flutter. Registry publication has not been performed; use a reviewed Git commit and package path.
@@ -21,9 +21,10 @@ Fuel sessions live in RAM and are lost on backend restart. `session_lost` is exp
 ```dart
 final client = FuelClient(Uri.parse('https://game.example'));
 await client.bootstrapBrowser(); // HttpOnly cookie, same-origin browser API
-final room = await client.createRoom('duel');
-final session = FuelSession(client)..select(room['session_id'] as String);
-await session.poll();
+final game = FuelGameController(client);
+await client.recoverOperations();
+await game.recoverRoom();
+if (game.sessionId == null) await game.create('duel');
 ```
 
 Native apps use `bootstrapNative(vault)` with an OS-backed `CredentialVault`. Secrets must not be stored in ordinary preferences or logs.
@@ -39,13 +40,13 @@ dependencies:
   fuel_flutter:
     git:
       url: https://github.com/Xanders/fuel-and-flame.git
-      ref: v0.2.0
+      ref: v0.3.0
       path: packages/fuel_flutter
 dependency_overrides:
   fuel_client:
     git:
       url: https://github.com/Xanders/fuel-and-flame.git
-      ref: v0.2.0
+      ref: v0.3.0
       path: packages/fuel_client
 ```
 

@@ -49,6 +49,9 @@ class FuelEventComponent<T> extends Component {
   final void Function() onResync;
   final int capacity;
   final double interval;
+  final FuelClient? owner;
+  StreamSubscription<void>? _identitySubscription;
+  int? _identityGeneration;
   final _queue = ListQueue<T>();
   StreamSubscription<T>? _subscription;
   bool _active = false;
@@ -60,6 +63,7 @@ class FuelEventComponent<T> extends Component {
     required this.onResync,
     this.capacity = 64,
     this.interval = 0.1,
+    this.owner,
   }) {
     if (capacity <= 0 || !interval.isFinite || interval < 0)
       throw ArgumentError('invalid queue limits');
@@ -68,6 +72,13 @@ class FuelEventComponent<T> extends Component {
   void onMount() {
     super.onMount();
     _active = true;
+    _identityGeneration = owner?.generation;
+    _identitySubscription = owner?.updates.listen((_) {
+      if (_identityGeneration != owner!.generation) {
+        _identityGeneration = owner!.generation;
+        reset();
+      }
+    });
     _subscription = source.listen((event) {
       if (!_active || _gap) return;
       if (_queue.length >= capacity) {
@@ -105,6 +116,8 @@ class FuelEventComponent<T> extends Component {
   @override
   void onRemove() {
     _active = false;
+    _identitySubscription?.cancel();
+    _identitySubscription = null;
     _subscription?.cancel();
     _subscription = null;
     _queue.clear();

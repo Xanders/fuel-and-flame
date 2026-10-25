@@ -6,6 +6,9 @@ import 'package:http/testing.dart';
 import 'package:test/test.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'client_test.dart' show TestVault;
+import 'account_owner_test.dart'
+    show accountA, accountB, accountData, fuelReply;
+import 'operations_test.dart' show journal;
 
 FuelSnapshot snapshot(String secret, {String revision = '0'}) =>
     FuelSnapshot.fromJson({
@@ -74,7 +77,14 @@ void main() {
       final response = Completer<http.Response>();
       final client = FuelClient(
         Uri.parse('https://game.example'),
-        httpClient: MockClient((_) => response.future),
+        journal: journal({}),
+        httpClient: MockClient((request) async {
+          if (request.url.path.endsWith('/auth/selection'))
+            return fuelReply({'candidate_id': 'candidate'});
+          if (request.url.path.endsWith('/account'))
+            return fuelReply(accountData(accountB));
+          return response.future;
+        }),
       );
       final session = FuelSession(client)..select('room');
       final operation = client.activateTransfer();
@@ -93,7 +103,7 @@ void main() {
       channel.emit('old account', '0');
       expect(session.current, isNull);
       expect(() => realtime.input({'x': 1}), throwsA(isA<FuelException>()));
-      response.complete(http.Response('{"wire_version":1,"data":{}}', 200));
+      response.complete(fuelReply({'account_id': accountB}));
       await operation;
       await realtime.close();
       await session.dispose();
@@ -107,13 +117,30 @@ void main() {
       () async {
         final client = FuelClient(
           Uri.parse('https://game.example'),
+          journal: journal({}),
           httpClient: MockClient.streaming(
-            (_, _) async => http.StreamedResponse(
-              Stream<List<int>>.error(
-                StateError('body lost after cookie header'),
-              ),
-              200,
-            ),
+            (request, _) async => request.url.path.endsWith('/auth/selection')
+                ? http.StreamedResponse(
+                    Stream.value(
+                      utf8.encode(
+                        jsonEncode({
+                          'wire_version': 1,
+                          'data': {
+                            'current': {'binding_id': 'a'},
+                            'previous': {'binding_id': 'b'},
+                            'candidate_id': 'c',
+                          },
+                        }),
+                      ),
+                    ),
+                    200,
+                  )
+                : http.StreamedResponse(
+                    Stream<List<int>>.error(
+                      StateError('body lost after cookie header'),
+                    ),
+                    200,
+                  ),
           ),
         );
         final session = FuelSession(client)..select('room');
@@ -152,15 +179,20 @@ void main() {
       final response = Completer<http.Response>();
       final client = FuelClient(
         Uri.parse('https://game.example'),
-        httpClient: MockClient((_) => response.future),
+        journal: journal({}),
+        httpClient: MockClient((request) async {
+          if (request.url.path.endsWith('/auth/selection'))
+            return fuelReply({'candidate_id': 'candidate'});
+          if (request.url.path.endsWith('/account'))
+            return fuelReply(accountData(accountB));
+          return response.future;
+        }),
       );
       final session = FuelSession(client)..select('room');
       final operation = client.activateTransfer();
       final blocked = client.request('GET', 'progress');
       session.suspend();
-      response.complete(
-        http.Response('{"wire_version":1,"data":{"account_id":"new"}}', 200),
-      );
+      response.complete(fuelReply({'account_id': accountB}));
       await expectLater(
         blocked,
         throwsA(
@@ -178,15 +210,15 @@ void main() {
     },
   );
   test(
-    'single-record vault atomically keeps both accounts across failure and restart',
+    'verified vault keeps both accounts across failure and restart',
     () async {
-      String? stored;
+      final stored = <String, String>{};
       var fail = false;
       final vault = RecordCredentialVault(
-        read: () async => stored,
-        write: (value) async {
+        read: (slot) async => stored[slot],
+        write: (slot, value) async {
           if (fail) throw StateError('storage failed');
-          stored = value;
+          stored[slot] = value;
         },
       );
       final a = FuelCredential.create(), b = FuelCredential.create();
@@ -195,14 +227,14 @@ void main() {
       fail = true;
       await expectLater(vault.activate(a), throwsStateError);
       final restarted = RecordCredentialVault(
-        read: () async => stored,
-        write: (value) async {
-          stored = value;
+        read: (slot) async => stored[slot],
+        write: (slot, value) async {
+          stored[slot] = value;
         },
       );
       expect((await restarted.read('active'))!.id, b.id);
       expect((await restarted.read('previous'))!.id, a.id);
-      stored = 'corrupt';
+      stored['a'] = 'corrupt';
       await expectLater(restarted.read('active'), throwsFormatException);
     },
   );
@@ -214,17 +246,27 @@ void main() {
       final client = FuelClient(
         Uri.parse('https://game.example'),
         httpClient: MockClient(
-          (_) async => http.Response(
-            '{"wire_version":1,"data":{"status":"linked","account_id":"b"}}',
-            200,
-          ),
+          (request) async => request.url.path.endsWith('/auth/pair/status')
+              ? fuelReply({'status': 'linked', 'account_id': accountB})
+              : fuelReply(
+                  accountData(
+                    request.headers['Authorization']!.contains(b.id)
+                        ? accountB
+                        : accountA,
+                  ),
+                ),
         ),
       )..credential = a;
       await client.activateTransfer(vault: vault);
       await client.activateTransfer(vault: vault);
       expect(vault.slots['previous']!.id, a.id);
       vault.failActivate = true;
-      await expectLater(client.switchPrevious(vault: vault), throwsStateError);
+      await expectLater(
+        client.switchPrevious(vault: vault),
+        throwsA(
+          isA<FuelException>().having((e) => e.code, 'code', 'storage_error'),
+        ),
+      );
       expect(vault.slots['active']!.id, b.id);
       expect(vault.slots['previous']!.id, a.id);
       vault.failActivate = false;

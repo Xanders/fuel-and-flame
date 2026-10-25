@@ -1,55 +1,75 @@
 # SDK use and recovery
 
-## Identity
+Pin the backend and all imported SDK packages to the same reviewed release. These development APIs may change; the envelope's wire_version alone does not imply compatibility with older packages. The core is pure Dart. Flutter and Flame are optional presentation/lifecycle bridges.
 
-Browser apps use the same-origin Fuel HTTP adapter. Call `bootstrapBrowser`: prepare an HttpOnly cookie, then create/restore the permanent guest. The SDK cannot read that cookie. All browser mutations must have an allowed Origin; cross-origin CORS is not part of this preview.
+## One application owner
 
-Native apps implement `CredentialVault` using OS secure storage. `bootstrapNative` saves the generated 32-byte secret before the network write. Network/5xx errors keep that credential; retry never silently replaces the guest.
+```dart
+final fuel = FuelClient(Uri.parse('https://game.example/app/fuel/v1'));
+final game = FuelGameController(fuel);
+await game.start(); // browser: restore identity, pending actions, receipts, membership
+if (fuel.account != null && game.sessionId == null) await game.create('solo');
+```
 
-Use `RecordCredentialVault(read: ..., write: ...)` with one OS-protected value and atomic whole-value writes. It serializes slot changes and stores active/previous in one record, so activation or switching cannot overwrite the sole durable copy of a binding halfway through a swap. Use one vault instance per stored value. Custom vaults must implement the same atomic `activate` contract; separate independent writes are insufficient. Corrupt storage fails explicitly and must never trigger replacement bootstrap.
+An origin-only base uses `/fuel/v1/`. A configured path is the complete application API prefix. Relative request paths cannot escape that prefix/host. Browser API is same-origin; native requests use HTTPS outside loopback tests.
 
-For transfer, A calls `issuePair`. B calls `prepareTransfer(vault: nativeVault)` (omit vault in browsers), then `requestPair(code)`. A reads `pendingPairs`, compares the same phrase with B and approves the exact ID. B calls `pairStatus`, then `activateTransfer` only after linked. `switchPrevious` returns to the retained prior guest. Progress is not merged. Preserve slots and candidate proof when a response is lost. Secrets are never printed or put in a URL.
+FuelClient owns account/progress, identity generation, storage/journal, profile single-flight and service facades. FuelGameController composes FuelSession and FuelRealtime for one selected room, readiness, liveness, reconnect backoff and disposal. Listen to their update streams. Account progress and operation payload accessors return copies.
 
-Repeating activation is idempotent and preserves the prior guest. Preparation renews consumed or expired candidates while retaining pending operations. `newAttempt: true` explicitly abandons the pending candidate for a new deliberate attempt; do not use it automatically after timeout/5xx.
+`game.input` accepts only transient intent after an authoritative socket snapshot. Do not replay movement after loss. `game.ready`, create/code/public join, match, leave and recoverRoom share canonical session routes. An unknown room creation is recovered with recoverRoom, not another create. Match intents retain their explicit ticket ID; cancellation uses the same ID.
 
-Browser activation and switching clear old projections and close old sockets before sending the request, and invalidate again when it finishes, including failure. A lost response may already have changed the HttpOnly cookie. Concurrent requests and new realtime connections fail with `identity_changing`; fetch a fresh snapshot after the operation. Identity changes preserve a suspended session until the application explicitly resumes it.
+States distinguish offline, unauthorized, identity pending, deleted, storage failure, lost RAM session and saving backpressure. Lost sessions offer a deliberate new session; they never create a new guest automatically. Saving blocks input until authoritative snapshots clear the backlog. Suspending local presentation does not pause server deadlines.
 
-## Commands
+## Identity and storage
 
-Construct one `FuelCommand(id, epoch, revision, action)` per semantic intent. Keep it until the outcome is known. Calling `command` again with that same object sends the same body; nested caller mutations cannot alter its stored action. Optional `PendingCommands` saves before the request and removes only after acceptance. Storage durability is the consumer's policy; pending gameplay commands cannot restore a lost RAM session.
+Browser bootstrap prepares a namespace-specific HttpOnly cookie before creating/restoring the permanent guest. The SDK cannot read its secret. The default journal uses namespaced localStorage, two verified records and Web Locks. It contains public selection metadata and pending operation/deletion proofs, never a device login secret. Storage/lock failures fail closed; clearing all browser storage can still lose access. One selected browser account per application/origin is shared across tabs. Selection changes invalidate other tabs' private projections; expected-account headers and socket admission prevent a stale tab acting as another player.
 
-Timeout/unavailable may mean committed. Retry the exact command; never generate a new ID or silently change the expected revision. Revision conflict needs a current snapshot and a new deliberate player intent. Session loss abandons old session actions; permanent account credentials remain.
+Native products supply OS-protected callbacks:
 
-## Sessions
+```dart
+final vault = RecordCredentialVault(
+  read: (slot) => secureStorage.read(key: 'my-game-fuel-$slot'),
+  write: (slot, value) => secureStorage.write(key: 'my-game-fuel-$slot', value: value),
+);
+await game.start(vault: vault);
+```
 
-`FuelSession#poll` permits one in-flight request. `select`, suspend and dispose invalidate late callbacks; HTTP requests use abort triggers. Identity changes also fence callbacks. Snapshots use BigInt revision/input counters. Older/repeated snapshots do not replay effects. A different epoch is session loss.
+The `secureStorage` object above is the application's OS adapter. Do not replace it with ordinary preferences or logs. Callbacks must store independent slots a/b; use one serialized vault instance per record pair, or supply a process-wide lock when sharing it. The vault checks written records by reading them, preserves active/previous/candidate and pending intents, and refuses corrupt records rather than generating replacement credentials. Retained previous bindings are bounded, never silently evicted to make room. Native WebSocket authorization headers are supplied by the SDK; browser sockets use cookies, never secrets in URLs.
 
-Call `poll` in your connection loop; handle errors with a bounded backoff. The session object intentionally does not start an unbounded background retry loop. On resume, call poll for the current snapshot before enabling input.
+For explicit custom ports, FuelJournal supplies atomic updateEntry, completeSelection and completeDeletion semantics. A native CredentialVault additionally implements read/write/activate, including conditional selectionId completion. Use the supplied record implementations rather than copying rotation logic. MemoryFuelJournal is intentionally nondurable; persistent actions/deletion/account changes require a durable journal.
 
-`FuelRealtime` accepts a caller-created `WebSocketChannel`, so browser cookies and native header transports remain platform choices. Wait for `connect` and an accepted snapshot before sending transient input. Do not replay inputs after disconnect. Supply onError and reconnect explicitly. Its shared connection engine bounds readiness, JSON message size and cleanup; reconnect policy remains the application's responsibility.
+A issues issuePair; B calls prepareTransfer then requestPair(code). A compares the phrase from pendingPairs/issuedPair and approves the exact ID. B checks pairStatus then activateTransfer. switchPrevious returns to a retained guest without merging progress. Linked activation is idempotent. Preparation retains an outstanding proof; newAttempt is a deliberate abandonment, never an automatic timeout response.
 
-Identity changes immediately clear the previous viewer projection and cursor. Realtime uses the same identity/session generation fences as polling; suspend, reselect, loss or identity change closes the old channel. Normal completion/errors clear readiness and notify onError; only a fresh channel and accepted snapshot allow further input. An unchanged valid snapshot confirms resume without replaying presentation events.
+Identity admission is synchronous and exclusive before any await. Transitions clear private state and stop old sockets. Frozen source/target intents are saved before selection; atomic completion cannot erase a newer intent. A lost response remains identityPending and blocks private activity until bootstrap/retry reconciles it. Native activation saves and verifies the proof before publishing selection. Socket reconnect does not change HTTP identity or cancel unrelated account requests.
+
+`deleteAccount(confirmed:true)` needs a loaded account and saved random deletion proof. A timeout is unknown, not success. recoverDeletion or bootstrap checks that proof after restart, even when the old login proof is gone. Confirmed deletion atomically forgets only returned removed binding IDs and that account's journal; another retained account is preserved. A durable deleted marker prevents automatic guest recreation. `game.start(newGuest:true)` is an explicit new-guest intent after confirmed deletion; switchPrevious can instead recover a surviving guest. Revoke the last active binding only with confirmedLast:true.
+
+## Permanent actions and confirmed results
+
+```dart
+final intent = FuelAction('buy', {'item': 'blade'});
+final committed = await fuel.executeAction(intent);
+```
+
+One immutable intent owns one random operation ID. The journal saves it before network mutation. An unknown response retains it and blocks a different intent. retryPendingActions first reads the original receipt, then posts exactly the same action only if unknown. A definite rejection releases the intent. A known commit stays successful if subsequent profile synchronization fails; surface lastError and retry synchronization rather than repeating the purchase with a new ID.
+
+`recoverOperations` works without a socket, including after server RAM loss. The per-account presentation cursor is saved before emitting each recovered page. Repeated recovery cannot replay those animations after a successful save. A fresh journal anchors the latest page and exposes lastOperation as the latest terminal summary without animating old history. More than 64 pending presentations requests resync and exposes operationGap. The latest terminal summary is independently recoverable behind ordinary history. Old receipts never overwrite current balances: the owner refreshes account progress from the server.
+
+Durable receipts do not restore a RAM match. Unsaved session state/work can be lost on process restart under Fuel's explicit storage contract. Committed permanent actions/receipts remain in PostgreSQL until account deletion.
+
+Session commands are separate: construct one FuelCommand(id,epoch,revision,action) for an intent, retain it after uncertainty and retry the same body. A revision conflict requires current state and a new deliberate intent; never silently rebase. Optional PendingCommands ports cannot restore a lost session.
 
 ## Flutter and Flame
 
-`FuelLifecycle` observes app lifecycle, suspends local polling and disarms held input. Resume changes local status and requires neutral input before retriggering actions. Dispose it when its UI owner leaves.
+FuelGameModel owns FuelClient/FuelGameController, adapts update streams into ChangeNotifier, observes Flutter lifecycle and disarms FuelInputGate. Disposal closes its owned account/session/transports. Use its fuel/game fields directly from settings and menus. The smaller FuelLifecycle remains available for standalone FuelSession integrations.
 
-`FuelSnapshotComponent` coalesces full authoritative snapshots until the next update. Do not use it for dependent deltas or ordered animation events.
+FuelInputGate rearms a held discrete action only after neutral. The application still maps platform keys/axes into game actions and owns HUD/modal focus.
 
-`FuelEventComponent<T>` presents at most one reliable event per interval (default 100 ms), with a bounded queue. Overflow or source error calls onResync and pauses presentation; install a current snapshot and call reset. It never divides one event's readable duration by the backlog size. Unmount cancels subscriptions and clears queued presentation.
+FuelSnapshotComponent coalesces full snapshots until the next frame. FuelEventComponent presents ordered events at a readable interval (default100ms) with a bounded queue; supply owner:fuel to clear queued events across account changes. Overflow/source error pauses presentation and calls onResync; install current state/summary then call reset. These components never run game rules, award time/scores, choose a camera or pause server deadlines.
 
-Neither component executes game rules, awards a score, chooses a camera nor pauses the backend clock.
+## Service facades and low-level integration
 
-## Incremental transport adoption
+FuelClient exposes account/actions/history, device transfer/bindings/revocation/deletion, room admission/matching/commands, chat history/posting/mutes/reports, leaderboards/ratings and confirmed analytics opt-out. IDs in request bodies confer no authority. Analytics choices publish only after fresh server confirmation; stale account reads cannot overwrite a newer confirmation.
 
-Existing wire protocols can use the same IO engines as `FuelClient` and `FuelRealtime` while retaining their account schema and message adapters. This adopts transport only; it does not migrate authentication, rules, storage or durable session promises. Pin both server and client contracts and test old/new peer compatibility before cutover.
+FuelHttpTransport and FuelConnection remain bounded low-level IO engines for controlled incremental integrations. They do not implement identity, durable intents or game rules. Importing them alone is transport adoption, not a complete framework migration. Canonical new clients should compose the owners above.
 
-`FuelHttpTransport(client: ...)` owns its supplied `http.Client` until `close()`. `get`, `post` and `request` preserve status, headers and response bytes. Defaults: 64 KiB UTF-8 request, 1 MiB response, 64 pending requests and one 20-second deadline covering headers **and** body. Limits and deadlines are configurable positive values. A cancellation future, timeout or close aborts IO and rejects the response, including late completion. Cleanup is bounded to three seconds. Oversize and saturation fail with `too_large`/`busy`. No status interpretation, retry, guest creation or semantic ID generation occurs. Aborting a mutation does not prove the server rolled it back; retain its exact operation for recovery.
-
-`FuelConnection` owns one replaceable `WebSocketChannel`. `connect(channel, onMessage: ..., onError: ..., hello: ...)` returns whether that attempt became ready. It subscribes before readiness, sends the optional hello first, then delivers buffered JSON objects. Defaults: 20-second ready deadline, 1 MiB per message, at most 32 early messages and three-second cleanup. `send` is allowed only while connected. `disconnect()` fences callbacks immediately and permits a fresh connection without waiting for a hung old close; `close()` permanently disposes it. Malformed/oversized input, stream failures and consumer callback failures terminate the current attempt once. Never replay transient inputs automatically.
-
-Optional `heartbeatTimeout` starts at readiness; `isHeartbeat` chooses which accepted messages renew it. For periodic authoritative snapshots, select only snapshots: ordinary feedback must not hide a stale world. The application still owns identity/lifetime/request generations, clears old private projections before a browser identity transition, and rechecks ownership after awaited or reentrant callbacks. Socket reconnect must not dispose HTTP or cancel unrelated requests of the same identity. Private wire adapters must not bypass these fences or reinterpret unknown mutation outcomes as failure.
-
-## Service facades
-
-FuelClient exposes room create/list/code/public join, matching/cancellation, account transfer/bindings/revocation/deletion, chat history/posting, leaderboards, outcome ratings and analytics opt-out. Raw `request` is available for compatible additive endpoints. The server validates all authority and membership; client account IDs confer no rights.
+HTTP defaults: 64KiB request, 1MiB response, 64 pending requests, one20-second headers/body deadline. Cancellation/timeout/close reject late completion; cleanup is bounded to3seconds. Socket defaults:20-second readiness,1MiB message,32 early messages,3-second cleanup. FuelRealtime additionally requires snapshots for its12-second liveness deadline; ordinary feedback cannot hide a stale world. Low-level budgets remain configurable positive values.

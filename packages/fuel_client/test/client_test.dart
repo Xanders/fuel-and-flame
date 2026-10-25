@@ -145,18 +145,49 @@ void main() {
   });
 }
 
-class TestVault implements CredentialVault {
+class TestVault extends MemoryFuelJournal implements CredentialVault {
+  @override
+  bool get durable => true;
   final slots = <String, FuelCredential>{};
   bool failActivate = false;
-  Future<void> activate(FuelCredential value) async {
+  Future<void> activate(
+    FuelCredential value, {
+    String? accountId,
+    String? selectionId,
+  }) async {
     if (failActivate) throw StateError('storage failed');
+    if (selectionId != null)
+      await completeSelection(selectionId, {
+        'kind': 'active',
+        'account_id': accountId,
+      });
     final old = slots['active'];
     if (old != null && old.id != value.id) slots['previous'] = old;
     slots['active'] = value;
+    await writeEntry('identity', {
+      'kind': 'active',
+      if (accountId != null) 'account_id': accountId,
+    });
   }
 
   @override
-  Future<FuelCredential?> read(String slot) async => slots[slot];
+  Future<void> completeDeletion(
+    String accountId,
+    List<String> removedBindings,
+  ) async {
+    slots.removeWhere((_, proof) => removedBindings.contains(proof.id));
+    await super.completeDeletion(accountId, removedBindings);
+  }
+
+  @override
+  Future<FuelCredential?> read(String slot) async {
+    if (!slot.startsWith('binding:')) return slots[slot];
+    for (final proof in slots.values) {
+      if (proof.id == slot.substring(8)) return proof;
+    }
+    return null;
+  }
+
   @override
   Future<void> write(String slot, FuelCredential credential) async {
     slots[slot] = credential;
