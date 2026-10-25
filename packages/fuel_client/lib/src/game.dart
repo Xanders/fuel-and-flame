@@ -24,6 +24,8 @@ class FuelGameController {
   Stream<void> get updates => _updates.stream;
   FuelGameStatus _status = FuelGameStatus.idle;
   FuelGameStatus get status => _status;
+  bool get _inactive =>
+      _status == FuelGameStatus.closed || _status == FuelGameStatus.suspended;
   FuelSnapshot? get current => session.current;
   String? get sessionId => session._id;
   String roomCode = '', mode = '';
@@ -116,13 +118,17 @@ class FuelGameController {
   Future<void> joinCode(String code) => _admit(() => client.joinCode(code), '');
   Future<void> joinPublic(String id) => _admit(() => client.joinPublic(id), '');
   Future<Json> match(String mode, {required String ticketId}) async {
+    if (_inactive) throw const FuelException('inactive_session');
+    final token = _generation, identity = client.generation;
     final result = await client.match(mode, ticketId: ticketId);
+    _guard(token, identity);
     if (result['status'] == 'matched') await _admit(() async => result, mode);
     return result;
   }
 
   Future<void> _admit(Future<Json> Function() admission, String selectedMode) {
-    if (_joining || _status == FuelGameStatus.closed || _admissionUnknown)
+    if (_inactive) return Future.error(const FuelException('inactive_session'));
+    if (_joining || _admissionUnknown)
       return Future.error(
         FuelException(_admissionUnknown ? 'pending_admission' : 'session_busy'),
       );
@@ -162,6 +168,7 @@ class FuelGameController {
   }
 
   Future<void> recoverRoom() async {
+    if (_inactive) throw const FuelException('inactive_session');
     final token = _generation, identity = client.generation;
     try {
       final rooms = await client.request('GET', 'sessions/mine') as List;
@@ -325,6 +332,7 @@ class FuelGameController {
   }
 
   Future<void> ready() async {
+    if (_inactive) throw const FuelException('inactive_session');
     final id = sessionId;
     if (id == null) throw const FuelException('inactive_session');
     final token = _generation, identity = client.generation;
@@ -340,6 +348,7 @@ class FuelGameController {
   }
 
   Future<void> leave() async {
+    if (_inactive) throw const FuelException('inactive_session');
     final id = sessionId;
     if (id == null) return;
     final token = _generation, identity = client.generation;

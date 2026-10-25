@@ -18,6 +18,87 @@ Json world() => {
 };
 
 void main() {
+  final suspendedCalls = <String, Future<dynamic> Function(FuelGameController)>{
+    'create': (game) => game.create('solo'),
+    'join code': (game) => game.joinCode('ACDEFH'),
+    'join public': (game) => game.joinPublic('room'),
+    'match': (game) => game.match('solo', ticketId: 'ticket'),
+    'recover room': (game) => game.recoverRoom(),
+    'ready': (game) => game.ready(),
+    'leave': (game) => game.leave(),
+  };
+  for (final entry in suspendedCalls.entries)
+    test(
+      'suspended ${entry.key} preserves lifecycle without requests',
+      () async {
+        var requests = 0;
+        final client = FuelClient(
+          Uri.parse('https://game.example'),
+          httpClient: MockClient((_) async {
+            requests++;
+            return fuelReply([]);
+          }),
+        );
+        final game = FuelGameController(client);
+        game.suspend();
+        await expectLater(
+          entry.value(game),
+          throwsA(
+            isA<FuelException>().having(
+              (e) => e.code,
+              'code',
+              'inactive_session',
+            ),
+          ),
+        );
+        expect(requests, 0);
+        expect(game.status, FuelGameStatus.suspended);
+        expect(game.session.status, FuelSessionStatus.suspended);
+        await game.dispose();
+        client.close();
+      },
+    );
+
+  test(
+    'a match response after suspension cannot select a room or reopen a socket',
+    () async {
+      final entered = Completer<void>(), release = Completer<void>();
+      var sockets = 0;
+      final client = FuelClient(
+        Uri.parse('https://game.example'),
+        httpClient: MockClient((_) async {
+          entered.complete();
+          await release.future;
+          return fuelReply({'status': 'matched', 'session_id': 'room'});
+        }),
+      );
+      final game = FuelGameController(
+        client,
+        socketFactory: (_, _) {
+          sockets++;
+          return TestChannel();
+        },
+      );
+      final matched = game.match('solo', ticketId: 'ticket');
+      await entered.future;
+      game.suspend();
+      final assertion = expectLater(
+        matched,
+        throwsA(
+          isA<FuelException>().having((e) => e.code, 'code', 'cancelled'),
+        ),
+      );
+      release.complete();
+      await assertion;
+      expect(game.status, FuelGameStatus.suspended);
+      expect(game.session.status, FuelSessionStatus.suspended);
+      expect(game.sessionId, isNull);
+      expect(sockets, 0);
+      await game.dispose();
+      client.close();
+    },
+  );
+
   test(
     'empty membership recovery clears the old room before a deliberate new session',
     () async {
