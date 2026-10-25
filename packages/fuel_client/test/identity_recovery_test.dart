@@ -9,6 +9,52 @@ import 'operations_test.dart' show journal;
 
 void main() {
   test(
+    'deletion recovery reconciles a lost selection before reopening private actions',
+    () async {
+      final storage = journal({});
+      var selected = accountA, switches = 0, chats = 0;
+      final client = FuelClient(
+        Uri.parse('https://game.example'),
+        journal: storage,
+        httpClient: MockClient((request) async {
+          if (request.url.path.endsWith('/auth/selection'))
+            return fuelReply({
+              'current': {'binding_id': 'a', 'account_id': accountA},
+              'previous': {'binding_id': 'b', 'account_id': accountB},
+            });
+          if (request.url.path.endsWith('/auth/switch')) {
+            switches++;
+            selected = accountB;
+            if (switches == 1)
+              throw http.ClientException('cookie changed, body lost');
+            return fuelReply({'account_id': selected});
+          }
+          if (request.url.path.endsWith('/account'))
+            return fuelReply(accountData(selected));
+          if (request.url.path.endsWith('/chat')) {
+            chats++;
+            expect(request.headers['X-Fuel-Expected-Account'], accountB);
+          }
+          return fuelReply({});
+        }),
+      );
+      await client.refreshAccount();
+      await expectLater(
+        client.switchPrevious(),
+        throwsA(isA<http.ClientException>()),
+      );
+      await client.recoverDeletion();
+      expect(client.account?.id, accountB);
+      expect(client.accountStatus, FuelAccountStatus.ready);
+      expect(await storage.readEntry('selection'), isNull);
+      await client.postChat('global', '', 'confirmed actor');
+      expect(chats, 1);
+      expect(switches, 2);
+      client.close();
+    },
+  );
+
+  test(
     'a definite selection conflict releases only that intent so bootstrap can reconcile the newer choice',
     () async {
       final storage = journal({});

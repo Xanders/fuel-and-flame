@@ -95,11 +95,19 @@ class FuelGameController {
       throw const FuelException('cancelled');
     if (client.account == null) return;
     final token = _generation, identity = client.generation;
-    await client.recoverOperations();
-    _guard(token, identity);
-    await client.retryPendingActions();
-    _guard(token, identity);
-    await recoverRoom();
+    _status = FuelGameStatus.connecting;
+    _updates.notify();
+    try {
+      await client.recoverOperations();
+      _guard(token, identity);
+      await client.retryPendingActions();
+      _guard(token, identity);
+      await recoverRoom();
+    } catch (error) {
+      _guard(token, identity);
+      _failed(error);
+      rethrow;
+    }
   }
 
   Future<void> create(String mode) =>
@@ -154,14 +162,24 @@ class FuelGameController {
 
   Future<void> recoverRoom() async {
     final token = _generation, identity = client.generation;
-    final rooms = await client.request('GET', 'sessions/mine') as List;
-    _guard(token, identity);
-    _admissionUnknown = false;
-    if (rooms.length > 1)
-      throw const FuelException('session_selection_required');
-    if (rooms.isEmpty) return;
-    _select(rooms.single as Json, '');
-    await connect();
+    try {
+      final rooms = await client.request('GET', 'sessions/mine') as List;
+      _guard(token, identity);
+      _admissionUnknown = false;
+      if (rooms.length > 1)
+        throw const FuelException('session_selection_required');
+      if (rooms.isEmpty) {
+        _status = FuelGameStatus.idle;
+        _updates.notify();
+        return;
+      }
+      _select(rooms.single as Json, '');
+      await connect();
+    } catch (error) {
+      _guard(token, identity);
+      _failed(error);
+      rethrow;
+    }
   }
 
   Future<void> connect() {

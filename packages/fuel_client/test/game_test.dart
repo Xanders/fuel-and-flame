@@ -18,6 +18,33 @@ Json world() => {
 };
 
 void main() {
+  for (final failedPath in ['operations', 'sessions/mine'])
+    test(
+      'startup exposes a retry state when $failedPath fails after login',
+      () async {
+        final client = FuelClient(
+          Uri.parse('https://game.example'),
+          journal: journal({}),
+          httpClient: MockClient((request) async {
+            if (request.url.path.endsWith('/$failedPath'))
+              throw http.ClientException('offline');
+            if (request.url.path.endsWith('/account'))
+              return fuelReply(accountData(accountA));
+            if (request.url.path.endsWith('/operations') ||
+                request.url.path.endsWith('/sessions/mine'))
+              return fuelReply([]);
+            return fuelReply({'account_id': accountA});
+          }),
+        );
+        final game = FuelGameController(client);
+        await expectLater(game.start(), throwsA(isA<http.ClientException>()));
+        expect(client.account?.id, accountA);
+        expect(game.status, FuelGameStatus.offline);
+        await game.dispose();
+        client.close();
+      },
+    );
+
   test(
     'the owner reconciles a pending persistent action while the game stays connected',
     () async {

@@ -23,6 +23,8 @@ States distinguish offline, unauthorized, identity pending, deleted, storage fai
 
 Browser bootstrap prepares a namespace-specific HttpOnly cookie before creating/restoring the permanent guest. The SDK cannot read its secret. The default journal uses namespaced localStorage, two verified records and Web Locks. It contains public selection metadata and pending operation/deletion proofs, never a device login secret. Storage/lock failures fail closed; clearing all browser storage can still lose access. One selected browser account per application/origin is shared across tabs. Selection changes invalidate other tabs' private projections; expected-account headers and socket admission prevent a stale tab acting as another player.
 
+Browser identity transitions hold a separate namespace Web Lock across cookie preparation, reconciliation and verified journal publication, including when a custom journal is supplied. Record transactions use their own lock so saving within a transition cannot deadlock. Deletion recovery cannot clear an unrelated pending selection without confirming the selected account.
+
 Native products supply OS-protected callbacks:
 
 ```dart

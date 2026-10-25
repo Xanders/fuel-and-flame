@@ -40,6 +40,13 @@ class _BrowserRecords extends BrowserRecordPort {
   }
 
   @override
+  Future<void> lockIdentity(Future<void> Function() action) async {
+    await web.window.navigator.locks
+        .request('$namespace:identity', ((web.Lock _) => action().toJS).toJS)
+        .toDart;
+  }
+
+  @override
   Stream<void> get changes => _changes.stream;
   @override
   void close() {

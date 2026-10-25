@@ -173,6 +173,10 @@ class FuelClient {
       throw ArgumentError('invalid base URL');
     if (_browserJournal is _BrowserFuelJournal) {
       _browserRecords = _browserJournal.port;
+    } else {
+      _browserRecords = _platformRecords(base);
+    }
+    if (_browserRecords != null) {
       _storageChanges = _browserRecords!.changes.listen((_) {
         unawaited(_checkBrowserSelection());
       });
@@ -180,19 +184,23 @@ class FuelClient {
   }
 
   static FuelJournal _platformJournal(Uri base) {
+    final port = _platformRecords(base);
+    return port == null ? MemoryFuelJournal() : _BrowserFuelJournal(port);
+  }
+
+  static platform.BrowserRecordPort? _platformRecords(Uri base) {
     final normalized = base.replace(
       path: base.path.isEmpty || base.path == '/'
           ? '/fuel/v1'
           : base.path.replaceFirst(RegExp(r'/$'), ''),
     );
-    final port = platform.browserRecords(
+    return platform.browserRecords(
       'fuel:${sha256.convert(utf8.encode('$normalized'))}',
     );
-    return port == null ? MemoryFuelJournal() : _BrowserFuelJournal(port);
   }
 
   Future<void> _checkBrowserSelection() async {
-    if (_closed || _vault != null) return;
+    if (_closed || _vault != null || _identityChanging) return;
     final token = generation;
     try {
       final selected = await _browserJournal.readEntry('identity');
@@ -288,7 +296,10 @@ class FuelClient {
     final task = () async {
       try {
         _guard(token);
-        final result = await operation(token);
+        final result = await _withBrowserIdentity(() async {
+          _guard(token);
+          return operation(token);
+        });
         _guard(token);
         return result;
       } catch (error) {
@@ -314,6 +325,16 @@ class FuelClient {
       _guard(token);
       return result;
     });
+  }
+
+  Future<T> _withBrowserIdentity<T>(Future<T> Function() operation) async {
+    final records = _browserRecords;
+    if (records == null) return operation();
+    late T result;
+    await records.lockIdentity(() async {
+      result = await operation();
+    });
+    return result;
   }
 
   Future<FuelAccount> refreshAccount() {

@@ -10,42 +10,46 @@ extension FuelIdentity on FuelClient {
     _preparingTransfer = true;
     final token = generation;
     try {
-      final storage = vault ?? _vault;
-      if (storage == null) {
-        await request(
-          'GET',
-          'auth/pair/prepare',
-          query: {if (newAttempt) 'new': 'true'},
-        );
-      } else {
-        _vault = storage;
-        _journal = storage;
-        var candidate = await _stored(() => storage.read('candidate'), token);
-        final previous = await _stored(() => storage.read('previous'), token);
-        var renew =
-            newAttempt ||
-            candidate == null ||
-            candidate.id == _credential?.id ||
-            candidate.id == previous?.id;
-        if (!renew) {
-          try {
-            final result =
-                await request(
-                      'GET',
-                      'auth/pair/status',
-                      authentication: candidate,
-                    )
-                    as Json;
-            renew = ['expired', 'cancelled'].contains(result['status']);
-          } on FuelException catch (error) {
-            if (!['unauthorized', 'invalid_code'].contains(error.code)) rethrow;
+      await _withBrowserIdentity(() async {
+        _guard(token);
+        final storage = vault ?? _vault;
+        if (storage == null) {
+          await request(
+            'GET',
+            'auth/pair/prepare',
+            query: {if (newAttempt) 'new': 'true'},
+          );
+        } else {
+          _vault = storage;
+          _journal = storage;
+          var candidate = await _stored(() => storage.read('candidate'), token);
+          final previous = await _stored(() => storage.read('previous'), token);
+          var renew =
+              newAttempt ||
+              candidate == null ||
+              candidate.id == _credential?.id ||
+              candidate.id == previous?.id;
+          if (!renew) {
+            try {
+              final result =
+                  await request(
+                        'GET',
+                        'auth/pair/status',
+                        authentication: candidate,
+                      )
+                      as Json;
+              renew = ['expired', 'cancelled'].contains(result['status']);
+            } on FuelException catch (error) {
+              if (!['unauthorized', 'invalid_code'].contains(error.code))
+                rethrow;
+            }
           }
+          candidate = renew ? FuelCredential.create() : candidate;
+          await _stored(() => storage.write('candidate', candidate!), token);
+          _candidate = candidate;
         }
-        candidate = renew ? FuelCredential.create() : candidate;
-        await _stored(() => storage.write('candidate', candidate!), token);
-        _candidate = candidate;
-      }
-      _guard(token);
+        _guard(token);
+      });
     } finally {
       _preparingTransfer = false;
     }
@@ -211,11 +215,14 @@ extension FuelIdentity on FuelClient {
 
   Future<void> recoverDeletion() => _withIdentity((token) async {
     await _resumeDeletions(token);
-    _identityUncertain = false;
     final marker = await _stored(() => _journal.readEntry('identity'), token);
-    _accountStatus = marker?['kind'] == 'deleted'
-        ? FuelAccountStatus.deleted
-        : FuelAccountStatus.idle;
+    if (marker?['kind'] == 'deleted') {
+      _identityUncertain = false;
+      _accountStatus = FuelAccountStatus.deleted;
+    } else {
+      final selected = await _resumeSelection(token);
+      _publishAccount(selected ?? await _readAccount(token), token);
+    }
   });
 
   Future<void> _resumeDeletions(int token) async {
