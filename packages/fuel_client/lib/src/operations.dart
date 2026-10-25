@@ -71,6 +71,8 @@ extension FuelOperations on FuelClient {
   Future<FuelOperation> executeAction(FuelAction intent) {
     if (_actionFlight != null)
       return Future.error(const FuelException('action_busy'));
+    if (utf8.encode(jsonEncode(intent.toJson())).length > _http.maxRequestBytes)
+      return Future.error(const FuelException('too_large'));
     final token = generation;
     late Future<FuelOperation> future;
     future =

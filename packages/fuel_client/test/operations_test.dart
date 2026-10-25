@@ -28,6 +28,62 @@ RecordJournal journal(Map<String, String> disk) => RecordJournal(
 
 void main() {
   test(
+    'an oversized action envelope is rejected before journalling and cannot block a smaller intent',
+    () async {
+      var posts = 0;
+      final client = FuelClient(
+        Uri.parse('https://game.example'),
+        journal: journal({}),
+        httpClient: MockClient((request) async {
+          if (request.url.path.endsWith('/account'))
+            return fuelReply(accountData(accountA));
+          if (request.url.path.endsWith('/actions')) {
+            posts++;
+            return fuelReply(
+              operation(
+                (jsonDecode(request.body) as Json)['id'] as String,
+                1,
+                source: 'public',
+              ),
+            );
+          }
+          return fuelReply([]);
+        }),
+      );
+      await client.refreshAccount();
+      final large = FuelAction('save', {'text': 'é' * 32740});
+      expect(utf8.encode(jsonEncode(large.payload)).length, lessThan(65536));
+      expect(
+        utf8.encode(jsonEncode(large.toJson())).length,
+        greaterThan(65536),
+      );
+      await expectLater(
+        client.executeAction(large),
+        throwsA(
+          isA<FuelException>().having((e) => e.code, 'code', 'too_large'),
+        ),
+      );
+      expect(posts, 0);
+      expect(await client.pendingActions(), isEmpty);
+      final small = FuelAction('save', {}, id: 'small');
+      expect((await client.executeAction(small)).id, small.id);
+      expect(posts, 1);
+      final overhead = utf8
+          .encode(
+            jsonEncode(FuelAction('save', {'text': ''}, id: 'fit').toJson()),
+          )
+          .length;
+      final fitting = FuelAction('save', {
+        'text': 'x' * (65536 - overhead),
+      }, id: 'fit');
+      expect(utf8.encode(jsonEncode(fitting.toJson())).length, 65536);
+      expect((await client.executeAction(fitting)).id, fitting.id);
+      expect(posts, 2);
+      client.close();
+    },
+  );
+
+  test(
     'a fresh device recovers a terminal summary outside its recent ordinary history page',
     () async {
       final finalResult = operation('banked-before-later-events', 1);
