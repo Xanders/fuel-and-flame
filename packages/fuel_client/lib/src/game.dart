@@ -119,9 +119,24 @@ class FuelGameController {
   Future<void> joinPublic(String id) => _admit(() => client.joinPublic(id), '');
   Future<Json> match(String mode, {required String ticketId}) async {
     if (_inactive) throw const FuelException('inactive_session');
+    if (_joining || _admissionUnknown) {
+      throw FuelException(
+        _admissionUnknown ? 'pending_admission' : 'session_busy',
+      );
+    }
+    _joining = true;
     final token = _generation, identity = client.generation;
-    final result = await client.match(mode, ticketId: ticketId);
-    _guard(token, identity);
+    late Json result;
+    try {
+      result = await _afterSettlement(
+        () => client.match(mode, ticketId: ticketId),
+        token,
+        identity,
+      );
+      _guard(token, identity);
+    } finally {
+      if (token == _generation) _joining = false;
+    }
     if (result['status'] == 'matched') await _admit(() async => result, mode);
     return result;
   }
@@ -138,7 +153,7 @@ class FuelGameController {
       try {
         if (sessionId != null) throw const FuelException('already_joined');
         _admissionUnknown = true;
-        final reply = await admission();
+        final reply = await _afterSettlement(admission, token, identity);
         _guard(token, identity);
         _admissionUnknown = false;
         _select(reply, selectedMode);
@@ -158,6 +173,48 @@ class FuelGameController {
           _joining = false;
       }
     }();
+  }
+
+  Future<Json> _afterSettlement(
+    Future<Json> Function() admission,
+    int token,
+    int identity,
+  ) async {
+    final watch = Stopwatch()..start();
+    final previous = _status;
+    try {
+      while (true) {
+        _guard(token, identity);
+        try {
+          return await admission();
+        } on FuelException catch (error) {
+          _guard(token, identity);
+          // A rejected admission cannot have created/joined a room.
+          if (error.status != 400 ||
+              error.code != 'pending_result' ||
+              watch.elapsed >= client.timeout)
+            rethrow;
+          _status = FuelGameStatus.saving;
+          _updates.notify();
+          _guard(token, identity);
+          final remaining = client.timeout - watch.elapsed;
+          if (remaining <= Duration.zero) rethrow;
+          const interval = Duration(milliseconds: 50);
+          await Future<void>.delayed(
+            remaining < interval ? remaining : interval,
+          );
+          _guard(token, identity);
+          if (watch.elapsed >= client.timeout) rethrow;
+        }
+      }
+    } finally {
+      if (token == _generation &&
+          identity == client.generation &&
+          _status == FuelGameStatus.saving) {
+        _status = previous;
+        _updates.notify();
+      }
+    }
   }
 
   void _select(Json reply, String selectedMode) {

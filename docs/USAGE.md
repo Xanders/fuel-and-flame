@@ -19,6 +19,8 @@ FuelClient owns account/progress, identity generation, storage/journal, profile 
 
 States distinguish offline, unauthorized, identity pending, deleted, storage failure, lost RAM session and saving backpressure. Lost sessions offer a deliberate new session; they never create a new guest automatically. Saving blocks input until authoritative snapshots clear the backlog. Suspending local presentation does not pause server deadlines.
 
+Leaving a room can enqueue a final persistent effect before the next admission. If create, code/public join or matchmaking receives an explicit HTTP 400 `pending_result` rejection, the game controller waits in `saving` and retries the same admission, preserving the match ticket. Waiting is bounded by the existing client timeout budget; each HTTP request retains its transport timeout. Suspension, identity changes and disposal stop it. An unknown admission outcome still requires membership recovery; it is never blindly repeated.
+
 ## Identity and storage
 
 Browser bootstrap prepares a namespace-specific HttpOnly cookie before creating/restoring the permanent guest. The SDK cannot read its secret. The default journal uses namespaced localStorage, two verified records and Web Locks. It contains public selection metadata and pending operation/deletion proofs, never a device login secret. Storage/lock failures fail closed; clearing all browser storage can still lose access. One selected browser account per application/origin is shared across tabs. Selection changes invalidate other tabs' private projections; expected-account headers and socket admission prevent a stale tab acting as another player.
