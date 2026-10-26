@@ -64,6 +64,8 @@ Durable receipts do not restore a RAM match. Unsaved session state/work can be l
 
 For discrete session actions, `await game.command({'type':'move', ...})` freezes one ID, epoch, revision and action in the account journal before sending. `game.pendingCommand` exposes an uncertain intent; `retryCommand()` sends that exact body. Reconnect and periodic recovery reconcile it before accepting another command. A definite revision conflict releases the rejected intent and reads current authority; choosing another action remains deliberate. A lost session/epoch discards its old transient intent without replaying it into a replacement room. Identity changes and disposal fence late replies. Native restart recovery requires an OS-backed vault, browser recovery its durable journal.
 
+An account has at most one uncertain discrete command across its controllers. Selecting another live room never deletes that command; that room may be left or observed, while a new discrete action waits for the original intent to settle. Shared-journal recovery clears stale local pending indicators after another controller resolves the intent. A rejected old move during reconnect does not invalidate a successfully recovered room.
+
 The lower-level `FuelClient.command` still accepts a caller-owned `FuelCommand`. Its optional `PendingCommands` port does not supply the game controller's recovery policy. Neither API restores a RAM session after backend loss or turns gameplay commands into permanent actions.
 
 ## Flutter and Flame

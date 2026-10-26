@@ -29,6 +29,219 @@ void select(
 
 void main() {
   test(
+    'a command receiving definitive room loss publishes loss and retires its exact intent',
+    () async {
+      final storage = journal({});
+      final client = FuelClient(
+        Uri.parse('https://game.example'),
+        journal: storage,
+        httpClient: MockClient((request) async {
+          if (request.url.path.endsWith('/account'))
+            return fuelReply(accountData(accountA));
+          return http.Response(
+            '{"wire_version":1,"error":"session_lost"}',
+            409,
+          );
+        }),
+      );
+      await client.refreshAccount();
+      final game = FuelGameController(client);
+      select(game);
+      try {
+        await expectLater(
+          game.command({'type': 'move'}),
+          throwsA(
+            isA<FuelException>().having((e) => e.code, 'code', 'session_lost'),
+          ),
+        );
+        expect(game.status, FuelGameStatus.lost);
+        expect(game.pendingCommand, isNull);
+        expect(
+          await storage.readEntry('account:$accountA:session_command'),
+          isNull,
+        );
+      } finally {
+        await game.dispose();
+        client.close();
+      }
+    },
+  );
+
+  test(
+    'SDKCMD-R1-01: a rejected old action does not prevent reconnecting a live room',
+    () async {
+      var posts = 0, sockets = 0;
+      final client = FuelClient(
+        Uri.parse('https://game.example'),
+        journal: journal({}),
+        httpClient: MockClient((request) async {
+          if (request.url.path.endsWith('/account'))
+            return fuelReply(accountData(accountA));
+          if (request.url.path.endsWith('/commands')) {
+            if (++posts == 1) throw http.ClientException('offline');
+            return http.Response(
+              '{"wire_version":1,"error":"revision_conflict"}',
+              409,
+            );
+          }
+          return fuelReply(snapshot(revision: '3'));
+        }),
+      );
+      await client.refreshAccount();
+      final game = FuelGameController(
+        client,
+        socketFactory: (_, _) {
+          sockets++;
+          return TestChannel();
+        },
+      );
+      select(game);
+      try {
+        await expectLater(
+          game.command({'type': 'move'}),
+          throwsA(isA<http.ClientException>()),
+        );
+        await game.connect();
+        expect(sockets, 1);
+        expect(game.session.status, isNot(FuelSessionStatus.lost));
+        expect(game.current!.revision, BigInt.from(3));
+        expect(game.pendingCommand, isNull);
+      } finally {
+        await game.dispose();
+        client.close();
+      }
+    },
+  );
+
+  test(
+    'SDKCMD-R1-02: another controller clearing the journal also clears the local pending projection',
+    () async {
+      final storage = journal({});
+      var posts = 0;
+      final client = FuelClient(
+        Uri.parse('https://game.example'),
+        journal: storage,
+        httpClient: MockClient((request) async {
+          if (request.url.path.endsWith('/account'))
+            return fuelReply(accountData(accountA));
+          if (request.url.path.endsWith('/commands')) {
+            if (++posts == 1) throw http.ClientException('offline');
+            return fuelReply(snapshot(revision: '1'));
+          }
+          return fuelReply(snapshot(revision: '1'));
+        }),
+      );
+      await client.refreshAccount();
+      final a = FuelGameController(client), b = FuelGameController(client);
+      select(a);
+      select(b);
+      try {
+        await expectLater(
+          a.command({'type': 'move'}),
+          throwsA(isA<http.ClientException>()),
+        );
+        await expectLater(
+          b.command({'type': 'other'}),
+          throwsA(isA<FuelException>()),
+        );
+        expect(b.pendingCommand, isNotNull);
+        await a.retryCommand();
+        await expectLater(
+          b.retryCommand(),
+          throwsA(
+            isA<FuelException>().having((e) => e.code, 'code', 'not_found'),
+          ),
+        );
+        expect(b.pendingCommand, isNull);
+      } finally {
+        await a.dispose();
+        await b.dispose();
+        client.close();
+      }
+    },
+  );
+
+  test(
+    'SDKCMD-R1-03: confirmed reconnect loss retires its command and allows deliberate leave',
+    () async {
+      final storage = journal({});
+      final client = FuelClient(
+        Uri.parse('https://game.example'),
+        journal: storage,
+        httpClient: MockClient((request) async {
+          if (request.url.path.endsWith('/account'))
+            return fuelReply(accountData(accountA));
+          if (request.url.path.endsWith('/commands'))
+            throw http.ClientException('offline');
+          if (request.url.path.endsWith('/operations')) return fuelReply([]);
+          return http.Response(
+            '{"wire_version":1,"error":"session_lost"}',
+            409,
+          );
+        }),
+      );
+      await client.refreshAccount();
+      final game = FuelGameController(client);
+      select(game);
+      try {
+        await expectLater(
+          game.command({'type': 'move'}),
+          throwsA(isA<http.ClientException>()),
+        );
+        await expectLater(game.connect(), throwsA(isA<FuelException>()));
+        expect(game.status, FuelGameStatus.lost);
+        expect(game.pendingCommand, isNull);
+        await game.leave();
+        expect(game.sessionId, isNull);
+      } finally {
+        await game.dispose();
+        client.close();
+      }
+    },
+  );
+
+  test(
+    'SDKCMD-R1-04: another live room never deletes the first rooms uncertain intent',
+    () async {
+      final bodies = <Json>[];
+      final client = FuelClient(
+        Uri.parse('https://game.example'),
+        journal: journal({}),
+        httpClient: MockClient((request) async {
+          if (request.url.path.endsWith('/account'))
+            return fuelReply(accountData(accountA));
+          bodies.add(jsonDecode(request.body) as Json);
+          if (bodies.length == 1) throw http.ClientException('offline');
+          return fuelReply(snapshot(revision: '1'));
+        }),
+      );
+      await client.refreshAccount();
+      final a = FuelGameController(client), b = FuelGameController(client);
+      select(a);
+      b.session.select('other');
+      b.session.accept(
+        FuelSnapshot.fromJson({...snapshot(), 'session_id': 'other'}),
+      );
+      try {
+        await expectLater(
+          a.command({'type': 'move'}),
+          throwsA(isA<http.ClientException>()),
+        );
+        await expectLater(
+          b.command({'type': 'other'}),
+          throwsA(isA<FuelException>()),
+        );
+        await a.retryCommand();
+        expect(bodies.last['id'], bodies.first['id']);
+      } finally {
+        await a.dispose();
+        await b.dispose();
+        client.close();
+      }
+    },
+  );
+
+  test(
     'reconnect reconciles the saved command before opening the selected room stream',
     () async {
       final storage = journal({}), bodies = <String>[];

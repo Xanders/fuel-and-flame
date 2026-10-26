@@ -3,7 +3,9 @@ part of '../fuel_client.dart';
 extension FuelSessionCommands on FuelGameController {
   Future<FuelSnapshot> command(Json action) {
     final current = this.current;
-    if (current == null || _inactive)
+    if (current == null ||
+        _inactive ||
+        session.status == FuelSessionStatus.lost)
       return Future.error(const FuelException('inactive_session'));
     return _sendCommand(
       FuelCommand(randomId(), current.epoch, current.revision, action),
@@ -21,7 +23,50 @@ extension FuelSessionCommands on FuelGameController {
       identity,
     );
     _guard(token, identity);
-    if (pending != null && _commandFlight == null) await retryCommand();
+    if (_commandFlight != null) return;
+    if (pending == null || pending['session_id'] != sessionId) {
+      _pendingCommand = null;
+      _updates.notify();
+      return;
+    }
+    if (_commandFlight == null) {
+      try {
+        await retryCommand();
+      } on FuelException catch (error) {
+        _guard(token, identity);
+        if (_pendingCommand != null ||
+            ![
+              'revision_conflict',
+              'conflict',
+              'invalid_action',
+            ].contains(error.code))
+          rethrow;
+        // The rejected move is finished; the room itself remains authoritative.
+      }
+    }
+  }
+
+  Future<void> _retireLostCommand(String room) async {
+    final actor = client.account?.id;
+    if (actor == null) return;
+    final token = _generation, identity = client.generation;
+    final key = 'account:$actor:session_command';
+    final pending = await client._stored(
+      () => client._journal.readEntry(key),
+      identity,
+    );
+    _guard(token, identity);
+    if (pending?['session_id'] == room) {
+      await client._stored(
+        () => client._journal.updateEntry(
+          key,
+          (old) => old?['id'] == pending!['id'] ? null : old,
+        ),
+        identity,
+      );
+      _guard(token, identity);
+    }
+    _pendingCommand = null;
   }
 
   Future<FuelSnapshot> _sendCommand(FuelCommand? proposed) {
@@ -58,7 +103,11 @@ extension FuelSessionCommands on FuelGameController {
           identity,
         );
         guard();
-        if (entry == null) throw const FuelException('not_found');
+        if (entry == null || entry['session_id'] != id) {
+          _pendingCommand = null;
+          _updates.notify();
+          throw FuelException(entry == null ? 'not_found' : 'pending_command');
+        }
         final command = FuelCommand(
           entry['id'] as String,
           entry['epoch'] as String,
@@ -82,7 +131,7 @@ extension FuelSessionCommands on FuelGameController {
           guard();
         }
 
-        if (entry['session_id'] != id || command.epoch != current!.epoch) {
+        if (command.epoch != current!.epoch) {
           await forget();
           throw const FuelException('session_lost');
         }
@@ -106,6 +155,13 @@ extension FuelSessionCommands on FuelGameController {
               error.status < 500 &&
               ![408, 429].contains(error.status)) {
             await forget();
+            if ([
+              'session_lost',
+              'session_ended',
+              'not_found',
+              'forbidden',
+            ].contains(error.code))
+              _failed(error);
             if (['revision_conflict', 'conflict'].contains(error.code)) {
               final snapshot =
                   await client.request(

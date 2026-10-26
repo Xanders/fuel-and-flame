@@ -235,21 +235,21 @@ class FuelGameController {
     if (_inactive) throw const FuelException('inactive_session');
     final token = _generation, identity = client.generation;
     try {
+      final actor = client.account?.id;
+      final key = 'account:$actor:session_command';
+      final pending = actor == null
+          ? null
+          : await client._stored(
+              () => client._journal.readEntry(key),
+              identity,
+            );
+      _guard(token, identity);
       final rooms = await client.request('GET', 'sessions/mine') as List;
       _guard(token, identity);
       _admissionUnknown = false;
       if (rooms.length > 1)
         throw const FuelException('session_selection_required');
       if (rooms.isEmpty) {
-        final actor = client.account?.id;
-        final key = 'account:$actor:session_command';
-        final pending = actor == null
-            ? null
-            : await client._stored(
-                () => client._journal.readEntry(key),
-                identity,
-              );
-        _guard(token, identity);
         if (pending != null) {
           await client._stored(
             () => client._journal.updateEntry(
@@ -346,6 +346,16 @@ class FuelGameController {
         );
       } catch (error) {
         _guard(token, identity);
+        if (error is FuelException &&
+            [
+              'session_lost',
+              'session_ended',
+              'not_found',
+              'forbidden',
+            ].contains(error.code)) {
+          await _retireLostCommand(id);
+          _guard(token, identity);
+        }
         _failed(error);
         rethrow;
       } finally {
