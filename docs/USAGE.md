@@ -19,7 +19,7 @@ FuelClient owns account/progress, identity generation, storage/journal, profile 
 
 States distinguish offline, unauthorized, identity pending, deleted, storage failure, lost RAM session and saving backpressure. Lost sessions offer a deliberate new session; they never create a new guest automatically. Saving blocks input until authoritative snapshots clear the backlog. Suspending local presentation does not pause server deadlines.
 
-Leaving a room can enqueue a final persistent effect before the next admission. If create, code/public join or matchmaking receives an explicit HTTP 400 `pending_result` rejection, the game controller waits in `saving` and retries the same admission, preserving the match ticket. Waiting is bounded by the existing client timeout budget; each HTTP request retains its transport timeout. Suspension, identity changes and disposal stop it. An unknown admission outcome still requires membership recovery; it is never blindly repeated.
+Leaving a room can enqueue a final persistent effect before the next admission. If create, code/public join, matchmaking or leave receives an explicit HTTP 400 `pending_result` rejection, the game controller waits in `saving` and retries the same membership change, preserving the match ticket. Waiting is bounded by the existing client timeout budget; each HTTP request retains its transport timeout. Suspension, identity changes and disposal stop it. An unknown admission outcome still requires membership recovery; it is never blindly repeated.
 
 ## Identity and storage
 
@@ -38,6 +38,8 @@ await game.start(vault: vault);
 ```
 
 The `secureStorage` object above is the application's OS adapter. Do not replace it with ordinary preferences or logs. Callbacks must store independent slots a/b; use one serialized vault instance per record pair, or supply a process-wide lock when sharing it. The vault checks written records by reading them, preserves active/previous/candidate and pending intents, and refuses corrupt records rather than generating replacement credentials. Retained previous bindings are bounded, never silently evicted to make room. Native WebSocket authorization headers are supplied by the SDK; browser sockets use cookies, never secrets in URLs.
+
+After a native binding is rejected, an explicit `game.start(vault: vault, newGuest: true)` first retries the retained proof. Only a definitive HTTP 401 `unauthorized` permits replacing that active proof. The replacement is verified in the vault before network use; retrying a lost bootstrap reuses it. A retained previous guest survives. Pending deletion/selection reconciliation runs first and cannot be bypassed by this flag. Ordinary bootstrap, network failures and server errors never trigger replacement.
 
 For explicit custom ports, FuelJournal supplies atomic updateEntry, completeSelection and completeDeletion semantics. A native CredentialVault additionally implements read/write/activate, including conditional selectionId completion. Use the supplied record implementations rather than copying rotation logic. MemoryFuelJournal is intentionally nondurable; persistent actions/deletion/account changes require a durable journal.
 

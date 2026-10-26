@@ -189,7 +189,7 @@ class FuelGameController {
           return await admission();
         } on FuelException catch (error) {
           _guard(token, identity);
-          // A rejected admission cannot have created/joined a room.
+          // This rejection has not performed the requested membership change.
           if (error.status != 400 ||
               error.code != 'pending_result' ||
               watch.elapsed >= client.timeout)
@@ -408,25 +408,42 @@ class FuelGameController {
     if (_inactive) throw const FuelException('inactive_session');
     final id = sessionId;
     if (id == null) return;
+    if (_joining || _admissionUnknown) {
+      throw FuelException(
+        _admissionUnknown ? 'pending_admission' : 'session_busy',
+      );
+    }
+    _joining = true;
     final token = _generation, identity = client.generation;
     try {
-      await client.request(
-        'POST',
-        'sessions/${Uri.encodeComponent(id)}/leave',
-        body: {},
-      );
-    } on FuelException catch (error) {
-      if (!['session_lost', 'session_ended'].contains(error.code)) rethrow;
+      try {
+        await _afterSettlement(
+          () async =>
+              await client.request(
+                    'POST',
+                    'sessions/${Uri.encodeComponent(id)}/leave',
+                    body: {},
+                  )
+                  as Json,
+          token,
+          identity,
+        );
+      } on FuelException catch (error) {
+        if (!['session_lost', 'session_ended'].contains(error.code)) rethrow;
+      }
+      _guard(token, identity);
+      _detach();
+      session.select('');
+      session._id = null;
+      roomCode = '';
+      mode = '';
+      _status = FuelGameStatus.idle;
+      _updates.notify();
+      await client.recoverOperations();
+    } finally {
+      if (token == _generation && identity == client.generation)
+        _joining = false;
     }
-    _guard(token, identity);
-    _detach();
-    session.select('');
-    session._id = null;
-    roomCode = '';
-    mode = '';
-    _status = FuelGameStatus.idle;
-    _updates.notify();
-    await client.recoverOperations();
   }
 
   void _detach() {

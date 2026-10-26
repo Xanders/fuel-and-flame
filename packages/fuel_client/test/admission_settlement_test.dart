@@ -11,6 +11,78 @@ http.Response saving() =>
     http.Response('{"wire_version":1,"error":"pending_result"}', 400);
 
 void main() {
+  test(
+    'departure waits for settlement without losing membership on rejection',
+    () async {
+      var posts = 0;
+      final client = FuelClient(
+        Uri.parse('https://game.example'),
+        httpClient: MockClient((request) async {
+          if (request.method == 'POST') {
+            return ++posts < 3 ? saving() : fuelReply({'status': 'left'});
+          }
+          if (request.url.path.endsWith('/account'))
+            return fuelReply(accountData(accountA));
+          return fuelReply([]);
+        }),
+      );
+      await client.refreshAccount();
+      final game = FuelGameController(client)..session.select('room');
+      final entered = Completer<void>();
+      final subscription = game.updates.listen((_) {
+        if (game.status == FuelGameStatus.saving && !entered.isCompleted)
+          entered.complete();
+      });
+      try {
+        final leaving = game.leave();
+        final assertion = expectLater(leaving, completes);
+        await entered.future.timeout(const Duration(seconds: 1));
+        expect(game.sessionId, 'room');
+        await expectLater(
+          game.match('solo', ticketId: 'other'),
+          throwsA(
+            isA<FuelException>().having((e) => e.code, 'code', 'session_busy'),
+          ),
+        );
+        await assertion;
+        expect(posts, 3);
+        expect(game.sessionId, isNull);
+        expect(game.status, FuelGameStatus.idle);
+      } finally {
+        await subscription.cancel();
+        await game.dispose();
+        client.close();
+      }
+    },
+  );
+
+  test(
+    'departure preserves membership after a rejected wait then an unknown reply',
+    () async {
+      var posts = 0;
+      final client = FuelClient(
+        Uri.parse('https://game.example'),
+        httpClient: MockClient((request) async {
+          if (request.method == 'POST') {
+            if (++posts == 1) return saving();
+            throw http.ClientException('lost departure response');
+          }
+          return fuelReply(accountData(accountA));
+        }),
+      );
+      await client.refreshAccount();
+      final game = FuelGameController(client)..session.select('room');
+      try {
+        await expectLater(game.leave(), throwsA(isA<http.ClientException>()));
+        expect(posts, 2);
+        expect(game.sessionId, 'room');
+      } finally {
+        await game.dispose();
+        client.close();
+      }
+    },
+  );
+
   final admissions = <String, Future<dynamic> Function(FuelGameController)>{
     'create': (game) => game.create('solo'),
     'join code': (game) => game.joinCode('ACDEFH'),

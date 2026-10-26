@@ -1,8 +1,10 @@
 # Changelog
 
-## 0.3.1 — admission after settlement
+## 0.3.1 — settlement and native guest recovery
 
-The game controller waits in `saving` when a room admission is explicitly rejected with `pending_result`, then retries the same intent within the existing client timeout budget. Create, code/public join and matchmaking share this behavior; a match retains its ticket ID. Suspension, identity changes and disposal cancel the wait. Unknown outcomes and unrelated errors are never automatically resubmitted.
+The game controller waits in `saving` when a room admission or departure is explicitly rejected with `pending_result`, then retries the same intent within the existing client timeout budget. Create, code/public join, matchmaking and leave share this behavior; a match retains its ticket ID. Suspension, identity changes and disposal cancel the wait. Unknown outcomes and unrelated errors are never automatically resubmitted.
+
+An explicit native `newGuest: true` can replace a retained proof only after bootstrap rejects it with HTTP 401 `unauthorized`. The new proof is saved before use and survives a lost response; a separately retained previous guest and pending identity recovery remain intact. Ordinary bootstrap never replaces a rejected proof automatically.
 
 ## 0.3.0 — shared account and session ownership preview
 

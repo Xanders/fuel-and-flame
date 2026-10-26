@@ -517,10 +517,26 @@ class FuelClient {
       _identityUncertain = false;
       return <String, dynamic>{'status': 'deleted'};
     }
-    final selected = saved ?? FuelCredential.create();
+    var selected = saved ?? FuelCredential.create();
     await _stored(() => vault.activate(selected), token);
     _credential = selected;
-    final result = await _request('POST', 'auth/bootstrap', body: {}) as Json;
+    late Json result;
+    try {
+      result = await _request('POST', 'auth/bootstrap', body: {}) as Json;
+    } on FuelException catch (error) {
+      if (!newGuest ||
+          saved == null ||
+          error.status != 401 ||
+          error.code != 'unauthorized')
+        rethrow;
+      _guard(token);
+      selected = FuelCredential.create();
+      // Replace only the rejected active slot, retaining a valid previous guest.
+      await _stored(() => vault.write('active', selected), token);
+      await _stored(() => vault.activate(selected), token);
+      _credential = selected;
+      result = await _request('POST', 'auth/bootstrap', body: {}) as Json;
+    }
     _guard(token);
     final value = await _readAccount(token);
     if (result['account_id'] != value.id)
