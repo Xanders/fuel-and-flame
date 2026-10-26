@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.3.2 — discrete command recovery and ranking pages
 
 The game controller owns exact discrete session-command intents, account-scoped journaling, uncertain-response retry, reconnect recovery and lost-epoch retirement. Consumers can remove their local command/restart reconciliation machinery while retaining game-specific action and presentation rules. Permanent account actions and transient realtime input keep their separate APIs.
+
+`leaderboardPage` adds public ranking pages with the authenticated player's own rank/best outside Top N. The existing leaderboard array response is unchanged.
 
 ## 0.3.1 — settlement and native guest recovery
 

@@ -1,5 +1,9 @@
 part of '../fuel_client.dart';
 
+bool _confirmedRoomLoss(Object error) =>
+    error is FuelException &&
+    ['session_lost', 'session_ended'].contains(error.code);
+
 extension FuelSessionCommands on FuelGameController {
   Future<FuelSnapshot> command(Json action) {
     final current = this.current;
@@ -155,28 +159,32 @@ extension FuelSessionCommands on FuelGameController {
               error.status < 500 &&
               ![408, 429].contains(error.status)) {
             await forget();
-            if ([
-              'session_lost',
-              'session_ended',
-              'not_found',
-              'forbidden',
-            ].contains(error.code))
-              _failed(error);
             if (['revision_conflict', 'conflict'].contains(error.code)) {
-              final snapshot =
-                  await client.request(
-                        'GET',
-                        'sessions/${Uri.encodeComponent(id)}',
-                      )
-                      as Json;
-              guard();
-              session.accept(FuelSnapshot.fromJson(snapshot));
+              try {
+                final snapshot =
+                    await client.request(
+                          'GET',
+                          'sessions/${Uri.encodeComponent(id)}',
+                        )
+                        as Json;
+                guard();
+                session.accept(FuelSnapshot.fromJson(snapshot));
+              } catch (error) {
+                guard();
+                _failed(error);
+                rethrow;
+              }
             }
           }
           rethrow;
         }
       } catch (error) {
         guard();
+        if (_confirmedRoomLoss(error)) {
+          await _retireLostCommand(id);
+          guard();
+          _failed(error);
+        }
         lastError = error;
         _updates.notify();
         rethrow;

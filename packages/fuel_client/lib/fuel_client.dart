@@ -687,6 +687,13 @@ class FuelClient {
             query: {'limit': '$limit'},
           )
           as List<dynamic>;
+  Future<Json> leaderboardPage(String board, {int limit = 100}) async =>
+      await request(
+            'GET',
+            'leaderboards/${Uri.encodeComponent(board)}/page',
+            query: {'limit': '$limit'},
+          )
+          as Json;
   Future<List<dynamic>> ratings(
     String board, {
     String metric = 'wins',

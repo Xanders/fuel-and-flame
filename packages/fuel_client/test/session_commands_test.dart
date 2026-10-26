@@ -28,6 +28,54 @@ void select(
 }
 
 void main() {
+  for (final (code, status) in [('session_lost', 409), ('forbidden', 403)])
+    test(
+      'SDKCMD-R2-01: authority $code during conflict refresh stops further commands',
+      () async {
+        var posts = 0;
+        final client = FuelClient(
+          Uri.parse('https://game.example'),
+          journal: journal({}),
+          httpClient: MockClient((request) async {
+            if (request.url.path.endsWith('/account'))
+              return fuelReply(accountData(accountA));
+            if (request.url.path.endsWith('/commands')) {
+              posts++;
+              return http.Response(
+                '{"wire_version":1,"error":"revision_conflict"}',
+                409,
+              );
+            }
+            return http.Response('{"wire_version":1,"error":"$code"}', status);
+          }),
+        );
+        await client.refreshAccount();
+        final game = FuelGameController(client);
+        select(game);
+        try {
+          await expectLater(
+            game.command({'type': 'move'}),
+            throwsA(isA<FuelException>().having((e) => e.code, 'code', code)),
+          );
+          expect(game.status, FuelGameStatus.lost);
+          await expectLater(
+            game.command({'type': 'other'}),
+            throwsA(
+              isA<FuelException>().having(
+                (e) => e.code,
+                'code',
+                'inactive_session',
+              ),
+            ),
+          );
+          expect(posts, 1);
+        } finally {
+          await game.dispose();
+          client.close();
+        }
+      },
+    );
+
   test(
     'a command receiving definitive room loss publishes loss and retires its exact intent',
     () async {

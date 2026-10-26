@@ -80,6 +80,8 @@ FuelSnapshotComponent coalesces full snapshots until the next frame. FuelEventCo
 
 FuelClient exposes account/actions/history, device transfer/bindings/revocation/deletion, room admission/matching/commands, chat history/posting/mutes/reports, leaderboards/ratings and confirmed analytics opt-out. IDs in request bodies confer no authority. Analytics choices publish only after fresh server confirmation; stale account reads cannot overwrite a newer confirmation.
 
+`leaderboardPage(board, limit:100)` returns `{entries,player_rank,player_best}`. Entries expose public `name`, decimal-string `rank`/`score` and `is_player`; own standing may be outside the page and is null before the first score. The server may supply a trusted common-board projection without sharing account authority. The older `leaderboard` array facade remains available.
+
 FuelHttpTransport and FuelConnection remain bounded low-level IO engines for controlled incremental integrations. They do not implement identity, durable intents or game rules. Importing them alone is transport adoption, not a complete framework migration. Canonical new clients should compose the owners above.
 
 HTTP defaults: 64KiB request, 1MiB response, 64 pending requests, one20-second headers/body deadline. Cancellation/timeout/close reject late completion; cleanup is bounded to3seconds. Socket defaults:20-second readiness,1MiB message,32 early messages,3-second cleanup. FuelRealtime additionally requires snapshots for its12-second liveness deadline; ordinary feedback cannot hide a stale world. Low-level budgets remain configurable positive values.

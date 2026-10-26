@@ -346,13 +346,7 @@ class FuelGameController {
         );
       } catch (error) {
         _guard(token, identity);
-        if (error is FuelException &&
-            [
-              'session_lost',
-              'session_ended',
-              'not_found',
-              'forbidden',
-            ].contains(error.code)) {
+        if (_confirmedRoomLoss(error)) {
           await _retireLostCommand(id);
           _guard(token, identity);
         }
