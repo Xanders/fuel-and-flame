@@ -12,6 +12,66 @@ http.Response saving() =>
 
 void main() {
   test(
+    'snapshots cannot enable input while departure awaits settlement',
+    () async {
+      var posts = 0;
+      final departed = Completer<http.Response>();
+      final entered = Completer<void>();
+      final client = FuelClient(
+        Uri.parse('https://game.example'),
+        httpClient: MockClient((request) async {
+          if (request.method == 'POST') {
+            return ++posts == 1 ? saving() : departed.future;
+          }
+          if (request.url.path.endsWith('/account'))
+            return fuelReply(accountData(accountA));
+          if (request.url.path.endsWith('/operations')) return fuelReply([]);
+          return fuelReply(world());
+        }),
+      );
+      await client.refreshAccount();
+      final channel = TestChannel();
+      final game = FuelGameController(client, socketFactory: (_, _) => channel)
+        ..session.select('room');
+      final subscription = game.updates.listen((_) {
+        if (game.status == FuelGameStatus.saving && !entered.isCompleted)
+          entered.complete();
+      });
+      Future<void>? assertion;
+      try {
+        await game.connect();
+        channel.emit('before', '1');
+        expect(game.status, FuelGameStatus.online);
+        assertion = expectLater(game.leave(), completes);
+        await entered.future.timeout(const Duration(seconds: 1));
+        channel.emit('during', '2');
+        expect(game.current?.state['private'], 'during');
+        expect(game.status, FuelGameStatus.saving);
+        final sent = channel.sink.messages.length;
+        expect(
+          () => game.input({'move': 1}),
+          throwsA(
+            isA<FuelException>().having((e) => e.code, 'code', 'not_connected'),
+          ),
+        );
+        expect(channel.sink.messages.length, sent);
+        expect(game.sessionId, 'room');
+        departed.complete(fuelReply({'status': 'left'}));
+        await assertion;
+        expect(game.sessionId, isNull);
+        expect(game.status, FuelGameStatus.idle);
+      } finally {
+        if (!departed.isCompleted)
+          departed.complete(fuelReply({'status': 'left'}));
+        await assertion;
+        await subscription.cancel();
+        await game.dispose();
+        client.close();
+      }
+    },
+  );
+
+  test(
     'departure waits for settlement without losing membership on rejection',
     () async {
       var posts = 0;

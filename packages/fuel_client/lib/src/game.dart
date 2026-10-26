@@ -35,7 +35,7 @@ class FuelGameController {
   int _generation = 0, _attempt = 0;
   BigInt _receiptCursor = BigInt.zero;
   Future<void>? _connecting;
-  bool _joining = false, _admissionUnknown = false;
+  bool _joining = false, _admissionUnknown = false, _settlementWait = false;
   late final StreamSubscription<void> _identity;
   late final StreamSubscription<FuelSnapshot> _snapshots;
 
@@ -75,7 +75,9 @@ class FuelGameController {
   }
 
   FuelGameStatus get _snapshotStatus =>
-      current?.savingBacklog == true || current?.effectError != null
+      _settlementWait ||
+          current?.savingBacklog == true ||
+          current?.effectError != null
       ? FuelGameStatus.saving
       : FuelGameStatus.online;
 
@@ -194,6 +196,7 @@ class FuelGameController {
               error.code != 'pending_result' ||
               watch.elapsed >= client.timeout)
             rethrow;
+          _settlementWait = true;
           _status = FuelGameStatus.saving;
           _updates.notify();
           _guard(token, identity);
@@ -208,11 +211,12 @@ class FuelGameController {
         }
       }
     } finally {
-      if (token == _generation &&
-          identity == client.generation &&
-          _status == FuelGameStatus.saving) {
-        _status = previous;
-        _updates.notify();
+      if (token == _generation && identity == client.generation) {
+        _settlementWait = false;
+        if (_status == FuelGameStatus.saving) {
+          _status = previous;
+          _updates.notify();
+        }
       }
     }
   }
@@ -383,7 +387,9 @@ class FuelGameController {
   }
 
   void input(Json action) {
-    if (_status != FuelGameStatus.online || _realtime == null)
+    if (_settlementWait ||
+        _status != FuelGameStatus.online ||
+        _realtime == null)
       throw const FuelException('not_connected');
     _realtime!.input(action);
   }
@@ -449,6 +455,7 @@ class FuelGameController {
   void _detach() {
     _generation++;
     _joining = false;
+    _settlementWait = false;
     _connecting = null;
     _retry?.cancel();
     _refresh?.cancel();
