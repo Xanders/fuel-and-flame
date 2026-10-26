@@ -62,7 +62,9 @@ One immutable intent owns one random operation ID. The journal saves it before n
 
 Durable receipts do not restore a RAM match. Unsaved session state/work can be lost on process restart under Fuel's explicit storage contract. Committed permanent actions/receipts remain in PostgreSQL until account deletion.
 
-Session commands are separate: construct one FuelCommand(id,epoch,revision,action) for an intent, retain it after uncertainty and retry the same body. A revision conflict requires current state and a new deliberate intent; never silently rebase. Optional PendingCommands ports cannot restore a lost session.
+For discrete session actions, `await game.command({'type':'move', ...})` freezes one ID, epoch, revision and action in the account journal before sending. `game.pendingCommand` exposes an uncertain intent; `retryCommand()` sends that exact body. Reconnect and periodic recovery reconcile it before accepting another command. A definite revision conflict releases the rejected intent and reads current authority; choosing another action remains deliberate. A lost session/epoch discards its old transient intent without replaying it into a replacement room. Identity changes and disposal fence late replies. Native restart recovery requires an OS-backed vault, browser recovery its durable journal.
+
+The lower-level `FuelClient.command` still accepts a caller-owned `FuelCommand`. Its optional `PendingCommands` port does not supply the game controller's recovery policy. Neither API restores a RAM session after backend loss or turns gameplay commands into permanent actions.
 
 ## Flutter and Flame
 

@@ -39,6 +39,9 @@ class FuelGameController {
   int _generation = 0, _attempt = 0;
   BigInt _receiptCursor = BigInt.zero;
   Future<void>? _connecting;
+  Future<FuelSnapshot>? _commandFlight;
+  FuelCommand? _pendingCommand;
+  FuelCommand? get pendingCommand => _pendingCommand;
   bool _joining = false, _admissionUnknown = false, _settlementWait = false;
   late final StreamSubscription<void> _identity;
   late final StreamSubscription<FuelSnapshot> _snapshots;
@@ -54,6 +57,7 @@ class FuelGameController {
       mode = '';
       _receiptCursor = BigInt.zero;
       _admissionUnknown = false;
+      _pendingCommand = null;
       if (_status != FuelGameStatus.closed &&
           _status != FuelGameStatus.suspended)
         _status = FuelGameStatus.idle;
@@ -237,13 +241,34 @@ class FuelGameController {
       if (rooms.length > 1)
         throw const FuelException('session_selection_required');
       if (rooms.isEmpty) {
+        final actor = client.account?.id;
+        final key = 'account:$actor:session_command';
+        final pending = actor == null
+            ? null
+            : await client._stored(
+                () => client._journal.readEntry(key),
+                identity,
+              );
+        _guard(token, identity);
+        if (pending != null) {
+          await client._stored(
+            () => client._journal.updateEntry(
+              key,
+              (old) => old?['id'] == pending['id'] ? null : old,
+            ),
+            identity,
+          );
+          _guard(token, identity);
+        }
         _detach();
         session.select('');
         session._id = null;
         roomCode = '';
         mode = '';
         _receiptCursor = BigInt.zero;
-        _status = FuelGameStatus.idle;
+        _pendingCommand = null;
+        _status = pending == null ? FuelGameStatus.idle : FuelGameStatus.lost;
+        if (pending != null) lastError = const FuelException('session_lost');
         _updates.notify();
         return;
       }
@@ -283,6 +308,8 @@ class FuelGameController {
                 as Json;
         _guard(token, identity);
         session.accept(FuelSnapshot.fromJson(snapshot));
+        _guard(token, identity);
+        await _recoverCommand();
         _guard(token, identity);
         final uri = client._apiUri('stream', {
           'session_id': id,
@@ -340,6 +367,8 @@ class FuelGameController {
         } on FuelException catch (error) {
           if (error.code != 'action_busy') rethrow;
         }
+        _guard(token, identity);
+        await _recoverCommand();
       }().catchError((Object error) {
         if (token == _generation &&
             identity == client.generation &&
@@ -387,6 +416,8 @@ class FuelGameController {
 
   void input(Json action) {
     if (_settlementWait ||
+        _commandFlight != null ||
+        _pendingCommand != null ||
         _status != FuelGameStatus.online ||
         _realtime == null)
       throw const FuelException('not_connected');
@@ -411,6 +442,8 @@ class FuelGameController {
 
   Future<void> leave() async {
     if (_inactive) throw const FuelException('inactive_session');
+    if (_commandFlight != null || _pendingCommand != null)
+      throw const FuelException('pending_command');
     final id = sessionId;
     if (id == null) return;
     if (_joining || _admissionUnknown) {
@@ -456,6 +489,7 @@ class FuelGameController {
     _joining = false;
     _settlementWait = false;
     _connecting = null;
+    _commandFlight = null;
     _retry?.cancel();
     _refresh?.cancel();
     _refresh = null;

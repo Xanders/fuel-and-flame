@@ -18,6 +18,7 @@ part 'src/account.dart';
 part 'src/operations.dart';
 part 'src/identity.dart';
 part 'src/game.dart';
+part 'src/session_commands.dart';
 
 typedef Json = Map<String, dynamic>;
 

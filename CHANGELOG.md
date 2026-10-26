@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+The game controller owns exact discrete session-command intents, account-scoped journaling, uncertain-response retry, reconnect recovery and lost-epoch retirement. Consumers can remove their local command/restart reconciliation machinery while retaining game-specific action and presentation rules. Permanent account actions and transient realtime input keep their separate APIs.
+
 ## 0.3.1 — settlement and native guest recovery
 
 The game controller waits in `saving` when a room admission or departure is explicitly rejected with `pending_result`, then retries the same intent within the existing client timeout budget. Create, code/public join, matchmaking and leave share this behavior; a match retains its ticket ID. Suspension, identity changes and disposal cancel the wait. Unknown outcomes and unrelated errors are never automatically resubmitted.
