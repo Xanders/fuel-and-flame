@@ -214,7 +214,7 @@ class FuelGameController {
       if (token == _generation && identity == client.generation) {
         _settlementWait = false;
         if (_status == FuelGameStatus.saving) {
-          _status = previous;
+          _status = _realtime?.generation != null ? _snapshotStatus : previous;
           _updates.notify();
         }
       }

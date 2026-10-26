@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:fuel_client/fuel_client.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -11,6 +12,74 @@ http.Response saving() =>
     http.Response('{"wire_version":1,"error":"pending_result"}', 400);
 
 void main() {
+  for (final metadata in <Json>[
+    {'saving_backlog': true},
+    {'effect_error': 'conflict'},
+    {},
+  ]) {
+    test('departure timeout respects the latest snapshot $metadata', () async {
+      final client = FuelClient(
+        Uri.parse('https://game.example'),
+        timeout: const Duration(milliseconds: 120),
+        httpClient: MockClient((request) async {
+          if (request.method == 'POST') return saving();
+          if (request.url.path.endsWith('/account'))
+            return fuelReply(accountData(accountA));
+          return fuelReply(world());
+        }),
+      );
+      await client.refreshAccount();
+      final channel = TestChannel();
+      final game = FuelGameController(client, socketFactory: (_, _) => channel)
+        ..session.select('room');
+      var injected = false;
+      final subscription = game.updates.listen((_) {
+        if (game.status != FuelGameStatus.saving || injected) return;
+        injected = true;
+        channel.inbound.add(
+          jsonEncode({
+            'wire_version': 1,
+            'generation': 'g',
+            'data': {...world(), 'revision': '2', ...metadata},
+          }),
+        );
+      });
+      try {
+        await game.connect();
+        channel.emit('before', '1');
+        await expectLater(
+          game.leave(),
+          throwsA(
+            isA<FuelException>().having(
+              (e) => e.code,
+              'code',
+              'pending_result',
+            ),
+          ),
+        );
+        expect(injected, isTrue);
+        expect(game.sessionId, 'room');
+        expect(game.current?.revision, BigInt.from(2));
+        expect(
+          game.status,
+          metadata.isEmpty ? FuelGameStatus.online : FuelGameStatus.saving,
+        );
+        if (metadata.isNotEmpty) {
+          final sent = channel.sink.messages.length;
+          expect(() => game.input({'move': 1}), throwsA(isA<FuelException>()));
+          expect(channel.sink.messages.length, sent);
+        } else {
+          game.input({'move': 1});
+          expect(channel.sink.messages, hasLength(1));
+        }
+      } finally {
+        await subscription.cancel();
+        await game.dispose();
+        client.close();
+      }
+    });
+  }
+
   test(
     'snapshots cannot enable input while departure awaits settlement',
     () async {
