@@ -247,19 +247,22 @@ class FuelGameController {
       final rooms = await client.request('GET', 'sessions/mine') as List;
       _guard(token, identity);
       _admissionUnknown = false;
+      if (pending != null &&
+          !rooms.any(
+            (room) => (room as Json)['session_id'] == pending['session_id'],
+          )) {
+        await client._stored(
+          () => client._journal.updateEntry(
+            key,
+            (old) => old?['id'] == pending['id'] ? null : old,
+          ),
+          identity,
+        );
+        _guard(token, identity);
+      }
       if (rooms.length > 1)
         throw const FuelException('session_selection_required');
       if (rooms.isEmpty) {
-        if (pending != null) {
-          await client._stored(
-            () => client._journal.updateEntry(
-              key,
-              (old) => old?['id'] == pending['id'] ? null : old,
-            ),
-            identity,
-          );
-          _guard(token, identity);
-        }
         _detach();
         session.select('');
         session._id = null;

@@ -28,6 +28,77 @@ void select(
 }
 
 void main() {
+  for (final newerDuringRead in [false, true]) {
+    test(
+      'SDKCMD-R3-01: missing room retires only the captured intent (newer=$newerDuringRead)',
+      () async {
+        final storage = journal({});
+        final key = 'account:$accountA:session_command';
+        final old = {
+          'session_id': 'expired-room',
+          'id': 'old',
+          'epoch': 'old-e',
+          'revision': '0',
+          'action': {'type': 'move'},
+        };
+        final newer = {...old, 'id': 'newer'};
+        await storage.updateEntry(key, (_) => old);
+        var posts = 0;
+        final client = FuelClient(
+          Uri.parse('https://game.example'),
+          journal: storage,
+          httpClient: MockClient((request) async {
+            if (request.url.path.endsWith('/account'))
+              return fuelReply(accountData(accountA));
+            if (request.url.path.endsWith('/sessions/mine')) {
+              if (newerDuringRead) await storage.updateEntry(key, (_) => newer);
+              return fuelReply([
+                {
+                  'session_id': 'room',
+                  'epoch': 'e',
+                  'mode': 'easy',
+                  'code': 'CODE',
+                },
+              ]);
+            }
+            if (request.url.path.endsWith('/commands')) posts++;
+            return fuelReply(snapshot());
+          }),
+        );
+        await client.refreshAccount();
+        final game = FuelGameController(
+          client,
+          socketFactory: (_, _) => TestChannel(),
+        );
+        try {
+          await game.recoverRoom();
+          expect(game.sessionId, 'room');
+          if (newerDuringRead) {
+            expect((await storage.readEntry(key))!['id'], 'newer');
+            await expectLater(
+              game.command({'type': 'move'}),
+              throwsA(
+                isA<FuelException>().having(
+                  (e) => e.code,
+                  'code',
+                  'pending_command',
+                ),
+              ),
+            );
+            expect(posts, 0);
+          } else {
+            expect(await storage.readEntry(key), isNull);
+            await game.command({'type': 'move'});
+            expect(posts, 1);
+          }
+        } finally {
+          await game.dispose();
+          client.close();
+        }
+      },
+    );
+  }
+
   for (final (code, status) in [('session_lost', 409), ('forbidden', 403)])
     test(
       'SDKCMD-R2-01: authority $code during conflict refresh stops further commands',

@@ -705,6 +705,32 @@ class FuelClient {
             query: {'metric': metric, 'hours': '$hours'},
           )
           as List<dynamic>;
+
+  /// Best-effort UI telemetry, separate from gameplay actions and receipts.
+  Future<String> analyticsEvent(
+    String name,
+    Json properties, {
+    String session = '',
+  }) async {
+    final confirmed = account;
+    if (confirmed == null) throw const FuelException('account_required');
+    if (!confirmed.analyticsEnabled || analyticsSaving) return 'disabled';
+    final result =
+        await request(
+              'POST',
+              'analytics/events',
+              body: {
+                'id': randomId(),
+                'name': name,
+                'session': session,
+                'properties': properties,
+                'revision': confirmed.analyticsRevision.toString(),
+              },
+            )
+            as Json;
+    return result['status'] as String;
+  }
+
   Future<void> analyticsEnabled(bool enabled) {
     if (_analyticsFlight != null)
       return Future.error(const FuelException('preference_busy'));

@@ -6,6 +6,8 @@ The game controller owns exact discrete session-command intents, account-scoped 
 
 `leaderboardPage` adds public ranking pages with the authenticated player's own rank/best outside Top N. The existing leaderboard array response is unchanged.
 
+`analyticsEvent` submits best-effort, server-allowlisted UI telemetry with the confirmed consent revision. It does not create persistent gameplay actions or automatic retries; authoritative outcome events remain server-owned.
+
 ## 0.3.1 — settlement and native guest recovery
 
 The game controller waits in `saving` when a room admission or departure is explicitly rejected with `pending_result`, then retries the same intent within the existing client timeout budget. Create, code/public join, matchmaking and leave share this behavior; a match retains its ticket ID. Suspension, identity changes and disposal cancel the wait. Unknown outcomes and unrelated errors are never automatically resubmitted.
