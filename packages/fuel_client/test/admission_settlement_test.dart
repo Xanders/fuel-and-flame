@@ -12,6 +12,52 @@ http.Response saving() =>
     http.Response('{"wire_version":1,"error":"pending_result"}', 400);
 
 void main() {
+  test(
+    'departure wait preserves a disconnected transport after timeout',
+    () async {
+      final channel = TestChannel();
+      var posts = 0;
+      final client = FuelClient(
+        Uri.parse('https://game.example'),
+        timeout: const Duration(milliseconds: 140),
+        httpClient: MockClient((request) async {
+          if (request.method == 'POST') {
+            if (++posts == 2) await channel.inbound.close();
+            return saving();
+          }
+          if (request.url.path.endsWith('/account'))
+            return fuelReply(accountData(accountA));
+          return fuelReply(world());
+        }),
+      );
+      await client.refreshAccount();
+      final game = FuelGameController(client, socketFactory: (_, _) => channel)
+        ..session.select('room');
+      try {
+        await game.connect();
+        channel.emit('before', '1');
+        await expectLater(
+          game.leave(),
+          throwsA(
+            isA<FuelException>().having(
+              (e) => e.code,
+              'code',
+              'pending_result',
+            ),
+          ),
+        );
+        expect(posts, greaterThanOrEqualTo(2));
+        expect(game.status, FuelGameStatus.offline);
+        expect(game.sessionId, 'room');
+        expect(() => game.input({'move': 1}), throwsA(isA<FuelException>()));
+        expect(channel.sink.messages, isEmpty);
+      } finally {
+        await game.dispose();
+        client.close();
+      }
+    },
+  );
+
   for (final metadata in <Json>[
     {'saving_backlog': true},
     {'effect_error': 'conflict'},

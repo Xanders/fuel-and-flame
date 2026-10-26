@@ -23,7 +23,11 @@ class FuelGameController {
   final _updates = _FuelSignal();
   Stream<void> get updates => _updates.stream;
   FuelGameStatus _status = FuelGameStatus.idle;
-  FuelGameStatus get status => _status;
+  FuelGameStatus get status =>
+      _settlementWait &&
+          (_status == FuelGameStatus.idle || _status == FuelGameStatus.online)
+      ? FuelGameStatus.saving
+      : _status;
   bool get _inactive =>
       _status == FuelGameStatus.closed || _status == FuelGameStatus.suspended;
   FuelSnapshot? get current => session.current;
@@ -75,9 +79,7 @@ class FuelGameController {
   }
 
   FuelGameStatus get _snapshotStatus =>
-      _settlementWait ||
-          current?.savingBacklog == true ||
-          current?.effectError != null
+      current?.savingBacklog == true || current?.effectError != null
       ? FuelGameStatus.saving
       : FuelGameStatus.online;
 
@@ -183,7 +185,6 @@ class FuelGameController {
     int identity,
   ) async {
     final watch = Stopwatch()..start();
-    final previous = _status;
     try {
       while (true) {
         _guard(token, identity);
@@ -197,7 +198,6 @@ class FuelGameController {
               watch.elapsed >= client.timeout)
             rethrow;
           _settlementWait = true;
-          _status = FuelGameStatus.saving;
           _updates.notify();
           _guard(token, identity);
           final remaining = client.timeout - watch.elapsed;
@@ -211,12 +211,11 @@ class FuelGameController {
         }
       }
     } finally {
-      if (token == _generation && identity == client.generation) {
+      if (token == _generation &&
+          identity == client.generation &&
+          _settlementWait) {
         _settlementWait = false;
-        if (_status == FuelGameStatus.saving) {
-          _status = _realtime?.generation != null ? _snapshotStatus : previous;
-          _updates.notify();
-        }
+        _updates.notify();
       }
     }
   }
