@@ -43,6 +43,7 @@ class FuelGameController {
   FuelCommand? _pendingCommand;
   FuelCommand? get pendingCommand => _pendingCommand;
   bool _joining = false, _admissionUnknown = false, _settlementWait = false;
+  bool _connectionReplaced = false;
   late final StreamSubscription<void> _identity;
   late final StreamSubscription<FuelSnapshot> _snapshots;
 
@@ -58,6 +59,8 @@ class FuelGameController {
       _receiptCursor = BigInt.zero;
       _admissionUnknown = false;
       _pendingCommand = null;
+      _connectionReplaced = false;
+      lastError = null;
       if (_status != FuelGameStatus.closed &&
           _status != FuelGameStatus.suspended)
         _status = FuelGameStatus.idle;
@@ -165,7 +168,7 @@ class FuelGameController {
         _guard(token, identity);
         _admissionUnknown = false;
         _select(reply, selectedMode);
-        await connect();
+        await _connect();
       } catch (error) {
         _guard(token, identity);
         if (error is FuelException && error.status >= 400 && error.status < 500)
@@ -225,7 +228,10 @@ class FuelGameController {
   }
 
   void _select(Json reply, String selectedMode) {
-    session.select(reply['session_id'] as String);
+    final id = reply['session_id'] as String;
+    if (_connectionReplaced && id == sessionId) return;
+    _connectionReplaced = false;
+    session.select(id);
     mode = reply['mode'] as String? ?? selectedMode;
     roomCode = reply['code'] as String? ?? '';
     _receiptCursor = BigInt.zero;
@@ -270,13 +276,15 @@ class FuelGameController {
         mode = '';
         _receiptCursor = BigInt.zero;
         _pendingCommand = null;
+        _connectionReplaced = false;
+        lastError = null;
         _status = pending == null ? FuelGameStatus.idle : FuelGameStatus.lost;
         if (pending != null) lastError = const FuelException('session_lost');
         _updates.notify();
         return;
       }
       _select(rooms.single as Json, '');
-      await connect();
+      await _connect();
     } catch (error) {
       _guard(token, identity);
       _failed(error);
@@ -284,7 +292,9 @@ class FuelGameController {
     }
   }
 
-  Future<void> connect() {
+  Future<void> connect() => _connect(reclaim: true);
+
+  Future<void> _connect({bool reclaim = false}) {
     if (_connecting != null) return _connecting!;
     final id = sessionId;
     if (id == null ||
@@ -294,6 +304,9 @@ class FuelGameController {
           FuelGameStatus.lost,
         ].contains(_status))
       return Future.error(const FuelException('inactive_session'));
+    // Only a deliberate public connect may reclaim a displaced room.
+    if (_connectionReplaced && !reclaim) return Future.value();
+    _connectionReplaced = false;
     final token = _generation, identity = client.generation;
     _status = FuelGameStatus.connecting;
     _retry?.cancel();
@@ -379,7 +392,8 @@ class FuelGameController {
       }().catchError((Object error) {
         if (token == _generation &&
             identity == client.generation &&
-            _status != FuelGameStatus.closed) {
+            _status != FuelGameStatus.closed &&
+            !_connectionReplaced) {
           lastError = error;
           _updates.notify();
         }
@@ -395,12 +409,14 @@ class FuelGameController {
       FuelGameStatus.unauthorized,
     ].contains(_status))
       return;
+    final previousError = lastError;
     lastError = error;
     final code = error is FuelException ? error.code : '';
     if (['unauthorized', 'selection_changed'].contains(code)) {
       _status = FuelGameStatus.unauthorized;
       _retry?.cancel();
     } else if (code == 'connection_replaced') {
+      _connectionReplaced = true;
       _status = FuelGameStatus.offline;
       _retry?.cancel();
     } else if (['session_lost', 'session_ended', 'forbidden'].contains(code) ||
@@ -414,11 +430,16 @@ class FuelGameController {
     } else {
       _status = FuelGameStatus.offline;
       _retry?.cancel();
+      if (_connectionReplaced) {
+        lastError = previousError;
+        _updates.notify();
+        return;
+      }
       final token = _generation, identity = client.generation;
       final delay = Duration(milliseconds: 500 * (1 << min(_attempt++, 4)));
       _retry = Timer(delay, () {
         if (token == _generation && identity == client.generation)
-          unawaited(connect().catchError((Object _) {}));
+          unawaited(_connect().catchError((Object _) {}));
       });
     }
     _updates.notify();
@@ -485,6 +506,8 @@ class FuelGameController {
       session._id = null;
       roomCode = '';
       mode = '';
+      _connectionReplaced = false;
+      lastError = null;
       _status = FuelGameStatus.idle;
       _updates.notify();
       await client.recoverOperations();
@@ -519,8 +542,10 @@ class FuelGameController {
   Future<void> resume() async {
     if (_status != FuelGameStatus.suspended) return;
     session.resume();
-    _status = FuelGameStatus.idle;
-    if (sessionId != null) await connect();
+    _status = _connectionReplaced
+        ? FuelGameStatus.offline
+        : FuelGameStatus.idle;
+    if (sessionId != null) await _connect();
     _updates.notify();
   }
 

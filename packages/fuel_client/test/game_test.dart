@@ -20,6 +20,7 @@ Json world() => {
 void main() {
   test('a replaced connection yields until an explicit reconnect', () async {
     final channels = <TestChannel>[];
+    var recoveryOffline = false;
     final client = FuelClient(
       Uri.parse('https://game.example'),
       httpClient: MockClient((request) async {
@@ -27,6 +28,12 @@ void main() {
           return fuelReply(accountData(accountA));
         }
         if (request.url.path.endsWith('/operations')) return fuelReply([]);
+        if (request.url.path.endsWith('/sessions/mine')) {
+          if (recoveryOffline) throw http.ClientException('offline');
+          return fuelReply([
+            {'session_id': 'room'},
+          ]);
+        }
         if (request.url.path.endsWith('/sessions')) {
           return fuelReply({'session_id': 'room'});
         }
@@ -56,16 +63,127 @@ void main() {
       expect((game.lastError as FuelException).code, 'connection_replaced');
       expect(game.sessionId, 'room');
       expect(game.current!.state['private'], 'retained board');
+      final retained = game.current, cause = game.lastError;
+      await game.recoverRoom();
+      expect(channels, hasLength(1));
+      expect(game.current, same(retained));
+      expect(game.status, FuelGameStatus.offline);
+      expect(game.lastError, same(cause));
+      recoveryOffline = true;
+      await expectLater(
+        game.recoverRoom(),
+        throwsA(isA<http.ClientException>()),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 650));
+      expect(channels, hasLength(1));
+      expect(game.status, FuelGameStatus.offline);
+      expect(game.lastError, same(cause));
       await game.connect();
       channels.last.emit('same room', '2');
       expect(channels, hasLength(2));
       expect(game.status, FuelGameStatus.online);
       expect(game.sessionId, 'room');
+      channels.last.inbound.addError(http.ClientException('ordinary outage'));
+      await Future<void>.delayed(const Duration(milliseconds: 650));
+      expect(channels, hasLength(3));
+      channels.last.emit('ordinary recovery', '3');
+      expect(game.status, FuelGameStatus.online);
     } finally {
       await game.dispose();
       client.close();
     }
   });
+
+  for (final reset in [
+    'leave',
+    'empty recovery',
+    'identity',
+    'different room',
+  ]) {
+    test('a displaced connection does not survive $reset', () async {
+      final channels = <TestChannel>[];
+      final client = FuelClient(
+        Uri.parse('https://game.example'),
+        httpClient: MockClient((request) async {
+          if (request.url.path.endsWith('/account')) {
+            return fuelReply(accountData(accountA));
+          }
+          if (request.url.path.endsWith('/operations')) return fuelReply([]);
+          if (request.url.path.endsWith('/sessions/mine')) {
+            return fuelReply(
+              reset == 'different room'
+                  ? [
+                      {'session_id': 'new-room'},
+                    ]
+                  : [],
+            );
+          }
+          if (request.url.path.endsWith('/sessions')) {
+            return fuelReply({'session_id': 'room'});
+          }
+          if (request.url.path.endsWith('/sessions/new-room')) {
+            return fuelReply({...world(), 'session_id': 'new-room'});
+          }
+          return fuelReply(world());
+        }),
+      );
+      final game = FuelGameController(
+        client,
+        socketFactory: (_, _) {
+          final channel = TestChannel();
+          channels.add(channel);
+          return channel;
+        },
+      );
+      try {
+        await client.refreshAccount();
+        await game.create('solo');
+        channels.single.emit('old board', '1');
+        channels.single.inbound.add(
+          jsonEncode({'wire_version': 1, 'error': 'connection_replaced'}),
+        );
+        expect(game.status, FuelGameStatus.offline);
+        if (reset == 'leave') await game.leave();
+        if (reset == 'empty recovery') await game.recoverRoom();
+        if (reset == 'identity') {
+          game.suspend();
+          client.credential = FuelCredential.create();
+          await client.refreshAccount();
+          await game.resume();
+        }
+        if (reset == 'different room') {
+          await game.recoverRoom();
+          expect(game.sessionId, 'new-room');
+        } else {
+          expect(game.sessionId, isNull);
+          expect(game.current, isNull);
+          await game.create('solo');
+        }
+        void emitNewBoard(String revision) => channels.last.inbound.add(
+          jsonEncode({
+            'wire_version': 1,
+            'generation': 'g',
+            'data': {
+              ...world(),
+              'session_id': game.sessionId,
+              'revision': revision,
+              'state': {'private': 'new board'},
+            },
+          }),
+        );
+        emitNewBoard('1');
+        game.suspend();
+        await game.resume();
+        expect(channels, hasLength(3));
+        emitNewBoard('2');
+        expect(game.status, FuelGameStatus.online);
+        expect(game.lastError, isNull);
+      } finally {
+        await game.dispose();
+        client.close();
+      }
+    });
+  }
 
   final suspendedCalls = <String, Future<dynamic> Function(FuelGameController)>{
     'create': (game) => game.create('solo'),

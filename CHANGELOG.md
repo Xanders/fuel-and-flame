@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.7 — preserve room displacement through lifecycle
+
+A controller displaced by another connection remains offline through background/foreground transitions and same-room recovery, retaining its board. Only explicit `connect()` reclaims that room. Identity changes, leaving, empty membership or selecting a different room clear the old displacement; ordinary network failures still reconnect automatically. No new dependency or storage change.
+
 ## 0.3.6 — yield a replaced room connection
 
 With Fuel0.3.7, a `connection_replaced` envelope leaves the controller offline with its room and board retained, without automatic reconnect. An explicit `connect()` can reclaim it. This prevents active devices repeatedly replacing each other's socket generation; ordinary network failures retain automatic backoff. No new dependency or storage change.
