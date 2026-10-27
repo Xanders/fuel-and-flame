@@ -260,13 +260,14 @@ void main() {
     () async {
       final (vault, revoked, previous) = await retained();
       var posts = 0;
+      final savedProofUsed = <bool>[];
       final client = FuelClient(
         Uri.parse('https://game.example'),
         httpClient: MockClient((request) async {
           if (request.url.path.endsWith('/auth/bootstrap')) {
             posts++;
             if (uses(request, revoked)) return unauthorized();
-            expect(uses(request, (await vault.read('active'))!), isTrue);
+            savedProofUsed.add(uses(request, (await vault.read('active'))!));
             return fuelReply({'account_id': replacementAccount});
           }
           if (request.url.path.endsWith('/account'))
@@ -287,6 +288,7 @@ void main() {
         expect((await vault.read('active'))!.id, isNot(previous.id));
         expect((await vault.read('previous'))!.id, previous.id);
         expect(posts, 3);
+        expect(savedProofUsed, [true]);
       } finally {
         await game.dispose();
         client.close();
