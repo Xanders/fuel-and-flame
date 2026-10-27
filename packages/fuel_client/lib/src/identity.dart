@@ -16,7 +16,7 @@ extension FuelIdentity on FuelClient {
     }
     final available = await _withBrowserIdentity(() async {
       _guard(token);
-      final selected = await request('GET', 'auth/selection') as Json;
+      final selected = await _request('GET', 'auth/selection') as Json;
       _guard(token);
       final previous = selected['previous'], current = selected['current'];
       if (previous == null) return false;
