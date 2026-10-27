@@ -1,13 +1,13 @@
 name: fuel_flame
 description: Optional Flame presentation bridge for Fuel snapshots and events.
-version: 0.3.2
+version: 0.3.3
 repository: https://github.com/Xanders/fuel-and-flame
 resolution: workspace
 environment:
   sdk: ^3.12.0
 dependencies:
   flame: ^1.38.2
-  fuel_client: ^0.3.2
+  fuel_client: ^0.3.3
 dev_dependencies:
   flutter_test:
     sdk: flutter

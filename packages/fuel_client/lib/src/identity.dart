@@ -1,6 +1,38 @@
 part of '../fuel_client.dart';
 
 extension FuelIdentity on FuelClient {
+  /// Read-only UI hint. A retained binding may have been revoked elsewhere;
+  /// switching still uses the normal verified identity transition.
+  Future<bool> hasPreviousAccount() async {
+    if (_identityChanging || _identityUncertain) {
+      throw const FuelException('identity_changing');
+    }
+    final token = generation;
+    _guard(token);
+    if (_vault case final vault?) {
+      final previous = await _stored(() => vault.read('previous'), token);
+      _guard(token);
+      return previous != null && previous.id != _credential?.id;
+    }
+    final available = await _withBrowserIdentity(() async {
+      _guard(token);
+      final selected = await request('GET', 'auth/selection') as Json;
+      _guard(token);
+      final previous = selected['previous'], current = selected['current'];
+      if (previous == null) return false;
+      if (previous is! Map ||
+          previous['binding_id'] is! String ||
+          (previous['binding_id'] as String).isEmpty ||
+          current != null &&
+              (current is! Map || current['binding_id'] is! String)) {
+        throw const FormatException('invalid_selection');
+      }
+      return previous['binding_id'] != (current as Map?)?['binding_id'];
+    });
+    _guard(token);
+    return available;
+  }
+
   Future<void> prepareTransfer({
     CredentialVault? vault,
     bool newAttempt = false,

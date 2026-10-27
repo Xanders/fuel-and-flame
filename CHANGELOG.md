@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.3 — previous account availability
+
+`hasPreviousAccount` exposes a read-only settings hint from the SDK's native vault or browser selection metadata. Consumers can avoid offering an unavailable return action without copying credential storage logic. It preserves the selected account and generation, rejects stale responses, and propagates storage/transport failures. Availability is not proof of server authorization; account transitions and their recovery contracts are unchanged.
+
 ## 0.3.2 — discrete command recovery and ranking pages
 
 The game controller owns exact discrete session-command intents, account-scoped journaling, uncertain-response retry, reconnect recovery and lost-epoch retirement. Consumers can remove their local command/restart reconciliation machinery while retaining game-specific action and presentation rules. Permanent account actions and transient realtime input keep their separate APIs.
