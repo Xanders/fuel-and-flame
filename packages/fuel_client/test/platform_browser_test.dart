@@ -11,6 +11,60 @@ import 'account_owner_test.dart'
 import 'operations_test.dart' show operation;
 
 void main() {
+  test(
+    'availability holds the browser identity lock and rejects a late result after identity invalidation',
+    () async {
+      final entered = Completer<void>(), release = Completer<void>();
+      final base = Uri.parse(
+        'https://game.example/availability-${randomId()}/fuel/v1',
+      );
+      var prepares = 0;
+      FuelClient make() => FuelClient(
+        base,
+        httpClient: MockClient((request) async {
+          if (request.url.path.endsWith('/account'))
+            return fuelReply(accountData(accountA));
+          if (request.url.path.endsWith('/auth/prepare')) prepares++;
+          if (request.url.path.endsWith('/auth/selection')) {
+            entered.complete();
+            await release.future;
+            return fuelReply({
+              'current': {'binding_id': 'a'},
+              'previous': {'binding_id': 'b'},
+            });
+          }
+          return fuelReply({'account_id': accountA});
+        }),
+      );
+      final a = make(), b = make();
+      try {
+        await a.bootstrapBrowser();
+        final first = a.hasPreviousAccount();
+        final assertion = expectLater(
+          first,
+          throwsA(
+            isA<FuelException>().having((e) => e.code, 'code', 'cancelled'),
+          ),
+        );
+        await entered.future;
+        final second = b.bootstrapBrowser();
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+        final beforeRelease = prepares;
+        a.credential = FuelCredential.create();
+        release.complete();
+        await assertion;
+        await second;
+        expect(beforeRelease, 1);
+        expect(prepares, 2);
+        expect(a.account, isNull);
+        expect(b.account!.id, accountA);
+      } finally {
+        if (!release.isCompleted) release.complete();
+        a.close();
+        b.close();
+      }
+    },
+  );
   for (final custom in [false, true])
     test(
       'browser owners serialize complete bootstrap before cookie preparation (custom journal: $custom)',
