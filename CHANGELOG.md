@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.6 — yield a replaced room connection
+
+With Fuel0.3.7, a `connection_replaced` envelope leaves the controller offline with its room and board retained, without automatic reconnect. An explicit `connect()` can reclaim it. This prevents active devices repeatedly replacing each other's socket generation; ordinary network failures retain automatic backoff. No new dependency or storage change.
+
 ## 0.3.5 — explicit browser guest recovery
 
 With Fuel0.3.6, `bootstrapBrowser(newGuest:true)` can recover from a definitively rejected active cookie. It first retries the retained proof; only HTTP401 `unauthorized` permits explicit preparation and one bootstrap retry. Ordinary bootstrap, uncertain transport/server failures, pending selection/deletion recovery and valid previous accounts retain their existing safeguards.

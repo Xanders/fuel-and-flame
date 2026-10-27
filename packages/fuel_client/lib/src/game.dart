@@ -400,6 +400,9 @@ class FuelGameController {
     if (['unauthorized', 'selection_changed'].contains(code)) {
       _status = FuelGameStatus.unauthorized;
       _retry?.cancel();
+    } else if (code == 'connection_replaced') {
+      _status = FuelGameStatus.offline;
+      _retry?.cancel();
     } else if (['session_lost', 'session_ended', 'forbidden'].contains(code) ||
         error is FuelException &&
             error.status >= 400 &&

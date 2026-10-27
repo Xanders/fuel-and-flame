@@ -18,6 +18,55 @@ Json world() => {
 };
 
 void main() {
+  test('a replaced connection yields until an explicit reconnect', () async {
+    final channels = <TestChannel>[];
+    final client = FuelClient(
+      Uri.parse('https://game.example'),
+      httpClient: MockClient((request) async {
+        if (request.url.path.endsWith('/account')) {
+          return fuelReply(accountData(accountA));
+        }
+        if (request.url.path.endsWith('/operations')) return fuelReply([]);
+        if (request.url.path.endsWith('/sessions')) {
+          return fuelReply({'session_id': 'room'});
+        }
+        return fuelReply(world());
+      }),
+    );
+    await client.refreshAccount();
+    final game = FuelGameController(
+      client,
+      socketFactory: (_, _) {
+        final channel = TestChannel();
+        channels.add(channel);
+        return channel;
+      },
+    );
+    try {
+      await game.create('solo');
+      channels.single.emit('retained board', '1');
+      expect(game.status, FuelGameStatus.online);
+      expect(game.current!.state['private'], 'retained board');
+      channels.single.inbound.add(
+        jsonEncode({'wire_version': 1, 'error': 'connection_replaced'}),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 650));
+      expect(channels, hasLength(1));
+      expect(game.status, FuelGameStatus.offline);
+      expect((game.lastError as FuelException).code, 'connection_replaced');
+      expect(game.sessionId, 'room');
+      expect(game.current!.state['private'], 'retained board');
+      await game.connect();
+      channels.last.emit('same room', '2');
+      expect(channels, hasLength(2));
+      expect(game.status, FuelGameStatus.online);
+      expect(game.sessionId, 'room');
+    } finally {
+      await game.dispose();
+      client.close();
+    }
+  });
+
   final suspendedCalls = <String, Future<dynamic> Function(FuelGameController)>{
     'create': (game) => game.create('solo'),
     'join code': (game) => game.joinCode('ACDEFH'),
