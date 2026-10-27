@@ -33,17 +33,32 @@ class _BrowserRecords extends BrowserRecordPort {
   }
 
   @override
-  Future<void> lock(Future<void> Function() action) async {
-    await web.window.navigator.locks
-        .request(namespace, ((web.Lock _) => action().toJS).toJS)
-        .toDart;
-  }
+  Future<void> lock(Future<void> Function() action) =>
+      _locked(namespace, action);
 
   @override
-  Future<void> lockIdentity(Future<void> Function() action) async {
+  Future<void> lockIdentity(Future<void> Function() action) =>
+      _locked('$namespace:identity', action);
+
+  Future<void> _locked(String name, Future<void> Function() action) async {
+    Object? failure;
+    StackTrace? trace;
+    // A Dart failure crossing a JS Promise becomes a boxed JS error. Keep it
+    // in Dart so callers can distinguish cancellation/auth/storage failures.
     await web.window.navigator.locks
-        .request('$namespace:identity', ((web.Lock _) => action().toJS).toJS)
+        .request(
+          name,
+          ((web.Lock _) => () async {
+            try {
+              await action();
+            } catch (error, stack) {
+              failure = error;
+              trace = stack;
+            }
+          }().toJS).toJS,
+        )
         .toDart;
+    if (failure != null) Error.throwWithStackTrace(failure!, trace!);
   }
 
   @override
