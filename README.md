@@ -5,7 +5,7 @@ MIT-licensed companion packages for the [Fuel Crystal backend](https://github.co
 | Package | Role | Runtime dependencies |
 |---|---|---|
 | fuel_client | Account/identity owner, verified vault/journal, durable actions/recovery, session controller and transport | crypto, http, web, web_socket_channel |
-| fuel_flutter | Optional notifier/lifecycle composition and input rearm | Flutter, fuel_client |
+| fuel_flutter | Optional notifier/lifecycle composition, input rearm and audio policy | Flutter, fuel_client |
 | fuel_flame | Optional snapshot/event presentation components | Flame, fuel_client |
 
 The core Dart SDK has no Flutter or Flame dependency. The monorepo development workspace includes both optional packages, so its full test workflow requires Flutter. Registry publication has not been performed; use a reviewed Git commit and package path.
@@ -40,13 +40,13 @@ dependencies:
   fuel_flutter:
     git:
       url: https://github.com/Xanders/fuel-and-flame.git
-      ref: v0.3.3
+      ref: v0.3.4
       path: packages/fuel_flutter
 dependency_overrides:
   fuel_client:
     git:
       url: https://github.com/Xanders/fuel-and-flame.git
-      ref: v0.3.3
+      ref: v0.3.4
       path: packages/fuel_client
 ```
 

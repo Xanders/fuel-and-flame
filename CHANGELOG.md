@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.4 — shared Flutter audio policy
+
+`FuelAudioPolicy` composes an existing audio backend with explicit gesture unlock, independent music/effects settings, foreground gates and serialized track/start/stop reconciliation. Newer settings win while playback awaits; disposal waits for an in-flight start and prevents resurrection. Autoplay or optional asset/device failures do not block play and retry only on a later request. No audio engine or new third-party dependency is introduced.
+
 ## 0.3.3 — previous account availability
 
 `hasPreviousAccount` exposes a read-only settings hint from the SDK's native vault or browser selection metadata. Consumers can avoid offering an unavailable return action without copying credential storage logic. It preserves the selected account and generation, rejects stale responses, and propagates storage/transport failures. Availability is not proof of server authorization; account transitions and their recovery contracts are unchanged.

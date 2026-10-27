@@ -4,6 +4,8 @@ import 'dart:async';
 import 'package:flutter/widgets.dart';
 import 'package:fuel_client/fuel_client.dart';
 
+export 'src/audio.dart';
+
 /// One UI owner for the account, session and local lifecycle.
 class FuelGameModel extends ChangeNotifier with WidgetsBindingObserver {
   final FuelClient fuel;

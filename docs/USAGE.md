@@ -76,6 +76,25 @@ FuelGameModel owns FuelClient/FuelGameController, adapts update streams into Cha
 
 FuelInputGate rearms a held discrete action only after neutral. The application still maps platform keys/axes into game actions and owns HUD/modal focus.
 
+`FuelAudioPolicy` is optional local playback policy over an existing backend; it has no Flame dependency:
+
+```dart
+final audio = FuelAudioPolicy(
+  music: 'music/menu.mp3',
+  startMusic: backend.playMusic,
+  stopMusic: backend.stopMusic,
+  disposeBackend: backend.dispose,
+  effectsActive: backend.setEffectsActive,
+);
+await audio.setMusicEnabled(savedMusicChoice); // does not invent a gesture
+await audio.onUserInteraction(); // call from the actual input gesture
+await audio.setAppActive(isForegroundAndVisible);
+await audio.playEffect(backend.playConfirmedMove);
+await audio.dispose();
+```
+
+Music starts/stops serially and follows the latest track, foreground and setting, including changes during an awaited backend call. `setMusic(null)` selects silence. An idle driver enters the playback callback in the gesture stack. A failed play is cleaned up best effort and retries on a later request; it never spins in an automatic retry loop. Effects require foreground and their independent setting. The optional `effectsActive` callback lets the backend cancel already-started or loading cues when disabled/backgrounded/disposed. The backend retains ownership of bounded pools, asset loading and late-resource cleanup; music and effects must not depend on each other's preload. Choose cues from confirmed presentation outcomes rather than replaying restored snapshots. Local visibility does not pause server authority.
+
 FuelSnapshotComponent coalesces full snapshots until the next frame. FuelEventComponent presents ordered events at a readable interval (default100ms) with a bounded queue; supply owner:fuel to clear queued events across account changes. Overflow/source error pauses presentation and calls onResync; install current state/summary then call reset. These components never run game rules, award time/scores, choose a camera or pause server deadlines.
 
 ## Service facades and low-level integration
