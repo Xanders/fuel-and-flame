@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.5 — explicit browser guest recovery
+
+With Fuel0.3.6, `bootstrapBrowser(newGuest:true)` can recover from a definitively rejected active cookie. It first retries the retained proof; only HTTP401 `unauthorized` permits explicit preparation and one bootstrap retry. Ordinary bootstrap, uncertain transport/server failures, pending selection/deletion recovery and valid previous accounts retain their existing safeguards.
+
 ## 0.3.4 — shared Flutter audio policy
 
 `FuelAudioPolicy` composes an existing audio backend with explicit gesture unlock, independent music/effects settings, foreground gates and serialized track/start/stop reconciliation. Newer settings win while playback awaits; disposal waits for an in-flight start and prevents resurrection. Autoplay or optional asset/device failures do not block play and retry only on a later request. No audio engine or new third-party dependency is introduced.

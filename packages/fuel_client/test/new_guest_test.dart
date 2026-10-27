@@ -5,6 +5,7 @@ import 'package:http/testing.dart';
 import 'package:test/test.dart';
 import 'account_owner_test.dart'
     show accountA, accountB, accountData, fuelReply;
+import 'operations_test.dart' show journal;
 
 const replacementAccount = 'cccccccccccccccccccccccccccccccc';
 
@@ -32,6 +33,193 @@ http.Response unauthorized() =>
     http.Response('{"wire_version":1,"error":"unauthorized"}', 401);
 
 void main() {
+  test(
+    'explicit browser guest recovers a definitively rejected cookie',
+    () async {
+      var rejected = true, bootstraps = 0;
+      final preparations = <String?>[];
+      final client = FuelClient(
+        Uri.parse('https://game.example'),
+        journal: journal({}),
+        httpClient: MockClient((request) async {
+          if (request.url.path.endsWith('/auth/prepare')) {
+            preparations.add(request.url.queryParameters['new']);
+            if (request.url.queryParameters['new'] == 'true') rejected = false;
+            return fuelReply({});
+          }
+          if (request.url.path.endsWith('/auth/bootstrap')) {
+            bootstraps++;
+            return rejected
+                ? unauthorized()
+                : fuelReply({'account_id': accountA});
+          }
+          if (request.url.path.endsWith('/account'))
+            return fuelReply(accountData(accountA));
+          if (request.url.path.endsWith('/auth/selection'))
+            return fuelReply({
+              'current': {'binding_id': 'new', 'account_id': accountA},
+              'previous': {'binding_id': 'previous', 'account_id': accountB},
+            });
+          throw StateError('Unexpected request');
+        }),
+      );
+      try {
+        await client.bootstrapBrowser(newGuest: true);
+        expect(client.account?.id, accountA);
+        expect(preparations, [null, 'true']);
+        expect(bootstraps, 2);
+        expect(await client.hasPreviousAccount(), isTrue);
+      } finally {
+        client.close();
+      }
+    },
+  );
+
+  for (final explicit in [false, true]) {
+    test(
+      'browser bootstrap $explicit keeps valid or uncertain cookies',
+      () async {
+        final preparations = <String?>[];
+        var failure = false;
+        final client = FuelClient(
+          Uri.parse('https://game.example'),
+          journal: journal({}),
+          httpClient: MockClient((request) async {
+            if (request.url.path.endsWith('/auth/prepare')) {
+              preparations.add(request.url.queryParameters['new']);
+              return fuelReply({});
+            }
+            if (request.url.path.endsWith('/auth/bootstrap'))
+              return failure
+                  ? http.Response(
+                      '{"wire_version":1,"error":"unavailable"}',
+                      503,
+                    )
+                  : fuelReply({'account_id': accountA});
+            if (request.url.path.endsWith('/account'))
+              return fuelReply(accountData(accountA));
+            throw StateError('Unexpected request');
+          }),
+        );
+        try {
+          await client.bootstrapBrowser(newGuest: explicit);
+          expect(client.account?.id, accountA);
+          expect(preparations, [null]);
+          failure = true;
+          await expectLater(
+            client.bootstrapBrowser(newGuest: explicit),
+            throwsA(
+              isA<FuelException>().having((e) => e.status, 'status', 503),
+            ),
+          );
+          expect(preparations, [null, null]);
+        } finally {
+          client.close();
+        }
+      },
+    );
+  }
+
+  test(
+    'ordinary browser bootstrap does not replace a rejected cookie',
+    () async {
+      final preparations = <String?>[];
+      final client = FuelClient(
+        Uri.parse('https://game.example'),
+        journal: journal({}),
+        httpClient: MockClient((request) async {
+          if (request.url.path.endsWith('/auth/prepare')) {
+            preparations.add(request.url.queryParameters['new']);
+            return fuelReply({});
+          }
+          return unauthorized();
+        }),
+      );
+      try {
+        await expectLater(
+          client.bootstrapBrowser(),
+          throwsA(isA<FuelException>()),
+        );
+        expect(preparations, [null]);
+      } finally {
+        client.close();
+      }
+    },
+  );
+
+  test('a late browser rejection cannot start cookie replacement', () async {
+    final entered = Completer<void>(), response = Completer<http.Response>();
+    var preparations = 0;
+    final client = FuelClient(
+      Uri.parse('https://game.example'),
+      journal: journal({}),
+      httpClient: MockClient((request) {
+        if (request.url.path.endsWith('/auth/prepare')) {
+          preparations++;
+          return Future.value(fuelReply({}));
+        }
+        entered.complete();
+        return response.future;
+      }),
+    );
+    try {
+      final assertion = expectLater(
+        client.bootstrapBrowser(newGuest: true),
+        throwsA(
+          isA<FuelException>().having((e) => e.code, 'code', 'cancelled'),
+        ),
+      );
+      await entered.future;
+      client.credential = FuelCredential.create();
+      response.complete(unauthorized());
+      await assertion;
+      expect(preparations, 1);
+      expect(client.account, isNull);
+    } finally {
+      client.close();
+    }
+  });
+
+  test(
+    'browser retries a lost replacement bootstrap without rotating again',
+    () async {
+      var rejected = true, replacementPosts = 0, renewals = 0;
+      final client = FuelClient(
+        Uri.parse('https://game.example'),
+        journal: journal({}),
+        httpClient: MockClient((request) async {
+          if (request.url.path.endsWith('/auth/prepare')) {
+            if (request.url.queryParameters['new'] == 'true') {
+              renewals++;
+              rejected = false;
+            }
+            return fuelReply({});
+          }
+          if (request.url.path.endsWith('/auth/bootstrap')) {
+            if (rejected) return unauthorized();
+            if (++replacementPosts == 1)
+              throw http.ClientException('committed, lost response');
+            return fuelReply({'account_id': accountA});
+          }
+          return fuelReply(accountData(accountA));
+        }),
+      );
+      try {
+        await expectLater(
+          client.bootstrapBrowser(newGuest: true),
+          throwsA(isA<http.ClientException>()),
+        );
+        expect(client.account, isNull);
+        await client.bootstrapBrowser(newGuest: true);
+        expect(client.account?.id, accountA);
+        expect(renewals, 1);
+        expect(replacementPosts, 2);
+      } finally {
+        client.close();
+      }
+    },
+  );
+
   test(
     'a late rejection cannot replace the proof after identity changes',
     () async {

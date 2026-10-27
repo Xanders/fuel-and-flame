@@ -567,7 +567,17 @@ class FuelClient {
     }
     await _request('GET', 'auth/prepare');
     _guard(token);
-    final result = await _request('POST', 'auth/bootstrap', body: {}) as Json;
+    late Json result;
+    try {
+      result = await _request('POST', 'auth/bootstrap', body: {}) as Json;
+    } on FuelException catch (error) {
+      if (!newGuest || error.status != 401 || error.code != 'unauthorized')
+        rethrow;
+      _guard(token);
+      await _request('GET', 'auth/prepare', query: {'new': 'true'});
+      _guard(token);
+      result = await _request('POST', 'auth/bootstrap', body: {}) as Json;
+    }
     _guard(token);
     final value = await _readAccount(token);
     if (result['account_id'] != value.id)
