@@ -10,74 +10,86 @@ import 'operations_test.dart' show journal, operation;
 import 'review_regression_test.dart' show TestChannel;
 
 void main() {
-  for (final path in ['operations', 'sessions/mine']) {
-    test('startup recovers $path after more than five automatic attempts', () {
-      fakeAsync((clock) {
-        var failures = 0, creates = 0, sockets = 0;
-        final channel = TestChannel();
-        final client = FuelClient(
-          Uri.parse('https://game.example'),
-          journal: journal({}),
-          httpClient: MockClient((request) async {
-            final route = request.url.path;
-            if (route.endsWith('/$path') && ++failures <= 6) {
-              throw http.ClientException('offline');
-            }
-            if (route.endsWith('/account'))
-              return fuelReply(accountData(accountA));
-            if (route.endsWith('/operations')) return fuelReply([]);
-            if (route.endsWith('/sessions/mine')) {
-              return fuelReply([
-                {'session_id': 'room'},
-              ]);
-            }
-            if (route.endsWith('/sessions')) creates++;
-            if (route.endsWith('/sessions/room')) return fuelReply(world());
-            return fuelReply({'account_id': accountA});
-          }),
-        );
-        final game = FuelGameController(
-          client,
-          socketFactory: (_, _) {
-            sockets++;
-            return channel;
-          },
-        );
-        Object? initialError;
-        unawaited(
-          game.start().catchError((Object error) {
-            initialError = error;
-          }),
-        );
-        clock.flushMicrotasks();
-        expect(initialError, isA<http.ClientException>());
-        expect(game.status, FuelGameStatus.offline);
-        for (var step = 0; step < 8 && sockets == 0; step++) {
-          clock.elapse(const Duration(seconds: 8));
-        }
-        expect(failures, greaterThanOrEqualTo(7));
-        expect(sockets, 1);
-        channel.emit('recovered', '1');
-        expect(game.status, FuelGameStatus.online);
-        expect(game.sessionId, 'room');
-        expect(creates, 0);
-        unawaited(game.dispose());
-        client.close();
-        clock.flushMicrotasks();
-      });
-    });
+  for (final (path, durable) in [
+    ('operations', true),
+    ('sessions/mine', true),
+    ('sessions/mine', false),
+  ]) {
+    test(
+      'startup recovers $path after more than five automatic attempts (durable=$durable)',
+      () {
+        fakeAsync((clock) {
+          var failures = 0, creates = 0, sockets = 0;
+          final channel = TestChannel();
+          final client = FuelClient(
+            Uri.parse('https://game.example'),
+            journal: durable ? journal({}) : MemoryFuelJournal(),
+            httpClient: MockClient((request) async {
+              final route = request.url.path;
+              if (route.endsWith('/$path') && ++failures <= 6) {
+                throw http.ClientException('offline');
+              }
+              if (route.endsWith('/account'))
+                return fuelReply(accountData(accountA));
+              if (route.endsWith('/operations')) return fuelReply([]);
+              if (route.endsWith('/sessions/mine')) {
+                return fuelReply([
+                  {'session_id': 'room'},
+                ]);
+              }
+              if (route.endsWith('/sessions')) creates++;
+              if (route.endsWith('/sessions/room')) return fuelReply(world());
+              return fuelReply({'account_id': accountA});
+            }),
+          );
+          final game = FuelGameController(
+            client,
+            socketFactory: (_, _) {
+              sockets++;
+              return channel;
+            },
+          );
+          Object? initialError;
+          unawaited(
+            game.start().catchError((Object error) {
+              initialError = error;
+            }),
+          );
+          clock.flushMicrotasks();
+          expect(initialError, isA<http.ClientException>());
+          expect(game.status, FuelGameStatus.offline);
+          for (var step = 0; step < 8 && sockets == 0; step++) {
+            clock.elapse(const Duration(seconds: 8));
+          }
+          expect(failures, greaterThanOrEqualTo(7));
+          expect(sockets, 1);
+          channel.emit('recovered', '1');
+          expect(game.status, FuelGameStatus.online);
+          expect(game.sessionId, 'room');
+          expect(creates, 0);
+          unawaited(game.dispose());
+          client.close();
+          clock.flushMicrotasks();
+        });
+      },
+    );
   }
 
-  for (final status in [0, 408, 429]) {
+  for (final (status, durable) in [
+    (0, true),
+    (408, true),
+    (429, true),
+    (0, false),
+  ]) {
     test(
-      'unknown admission ($status) recovers membership without another POST',
+      'unknown admission ($status, durable=$durable) recovers membership without another POST',
       () {
         fakeAsync((clock) {
           var posts = 0, reads = 0;
           final channel = TestChannel();
           final client = FuelClient(
             Uri.parse('https://game.example'),
-            journal: journal({}),
+            journal: durable ? journal({}) : MemoryFuelJournal(),
             httpClient: MockClient((request) async {
               final route = request.url.path;
               if (route.endsWith('/account'))
@@ -114,6 +126,8 @@ void main() {
           channel.emit('recovered', '1');
           expect(game.status, FuelGameStatus.online);
           expect(game.sessionId, 'room');
+          clock.elapse(const Duration(seconds: 5));
+          expect(game.lastError, isNull);
           unawaited(game.dispose());
           client.close();
           clock.flushMicrotasks();

@@ -114,7 +114,7 @@ class FuelGameController {
     try {
       await client.recoverOperations();
       _guard(token, identity);
-      await client.retryPendingActions();
+      if (client._journal.durable) await client.retryPendingActions();
       _guard(token, identity);
       await recoverRoom();
     } catch (error) {
@@ -390,7 +390,7 @@ class FuelGameController {
         await client.recoverOperations();
         _guard(token, identity);
         try {
-          await client.retryPendingActions();
+          if (client._journal.durable) await client.retryPendingActions();
         } on FuelException catch (error) {
           if (error.code != 'action_busy') rethrow;
         }
@@ -460,7 +460,7 @@ class FuelGameController {
     try {
       await client.recoverOperations();
       _guard(token, identity);
-      await client.retryPendingActions();
+      if (client._journal.durable) await client.retryPendingActions();
       _guard(token, identity);
     } catch (error) {
       _guard(token, identity);

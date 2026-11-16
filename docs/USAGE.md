@@ -68,6 +68,8 @@ One immutable intent owns one random operation ID. The journal saves it before n
 
 Standalone `executeAction` and `retryPendingActions` perform one attempt; they do not own a background retry loop. A connected game controller reconciles operations and pending actions every five seconds without an attempt limit. The no-room startup recovery above also reconciles pending actions before resolving membership. Successful idle startup without a selected room does not install a permanent action scheduler; call the explicit recovery methods when using the client independently.
 
+Controllers skip permanent-action recovery for nondurable journals, where persistent mutations cannot be admitted. Session-only clients using `MemoryFuelJournal` can still recover membership; this does not make permanent actions or their intents durable.
+
 `recoverOperations` works without a socket, including after server RAM loss. The per-account presentation cursor is saved before emitting each recovered page. Repeated recovery cannot replay those animations after a successful save. A fresh journal anchors the latest page and exposes lastOperation as the latest terminal summary without animating old history. More than 64 pending presentations requests resync and exposes operationGap. The latest terminal summary is independently recoverable behind ordinary history. Old receipts never overwrite current balances: the owner refreshes account progress from the server.
 
 Durable receipts do not restore a RAM match. Unsaved session state/work can be lost on process restart under Fuel's explicit storage contract. Committed permanent actions/receipts remain in PostgreSQL until account deletion.
