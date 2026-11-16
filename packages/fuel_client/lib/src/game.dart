@@ -171,8 +171,15 @@ class FuelGameController {
         await _connect();
       } catch (error) {
         _guard(token, identity);
-        if (error is FuelException && error.status >= 400 && error.status < 500)
+        if (error is FuelException &&
+            error.status >= 400 &&
+            error.status < 500 &&
+            ![408, 429].contains(error.status))
           _admissionUnknown = false;
+        if (_admissionUnknown) {
+          _failed(error);
+          rethrow;
+        }
         lastError = error;
         if (_status != FuelGameStatus.lost &&
             _status != FuelGameStatus.unauthorized)
@@ -439,10 +446,28 @@ class FuelGameController {
       final delay = Duration(milliseconds: 500 * (1 << min(_attempt++, 4)));
       _retry = Timer(delay, () {
         if (token == _generation && identity == client.generation)
-          unawaited(_connect().catchError((Object _) {}));
+          unawaited(_retryConnection().catchError((Object _) {}));
       });
     }
     _updates.notify();
+  }
+
+  Future<void> _retryConnection() async {
+    if (sessionId != null) return _connect();
+    if (_joining || _inactive) return;
+    final token = _generation, identity = client.generation;
+    _admissionUnknown = true;
+    try {
+      await client.recoverOperations();
+      _guard(token, identity);
+      await client.retryPendingActions();
+      _guard(token, identity);
+    } catch (error) {
+      _guard(token, identity);
+      _failed(error);
+      rethrow;
+    }
+    await recoverRoom();
   }
 
   void input(Json action) {

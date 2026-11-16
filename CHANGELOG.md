@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.7 maintenance — recover before room selection
+
+The controller's existing reconnect backoff now reconciles operations, exact pending account actions and membership when a transient startup failure occurs before room selection. Unknown create/join outcomes automatically read membership without repeating the admission POST, including after HTTP408/429. Attempts remain unbounded; authority, displacement and lifecycle fences remain. Definite command revision-conflict handling is unchanged. No wire, storage, runtime dependency or public API change; pin the reviewed maintenance commit. Tests directly declare the already workspace-locked fake_async development utility.
+
 ## 0.3.7 — preserve room displacement through lifecycle
 
 A controller displaced by another connection remains offline through background/foreground transitions and same-room recovery, retaining its board. Only explicit `connect()` reclaims that room. Identity changes, leaving, empty membership or selecting a different room clear the old displacement; ordinary network failures still reconnect automatically. No new dependency or storage change.
