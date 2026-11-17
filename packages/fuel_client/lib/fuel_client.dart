@@ -615,6 +615,7 @@ class FuelClient {
       return await _request('POST', 'auth/bootstrap', body: {}) as Json;
     } catch (error, stack) {
       _guard(token);
+      recovery?.check();
       if (recovery == null || !_FuelInitialRecovery.transient(error)) rethrow;
       try {
         // A lost write response is reconciled with the same proof, never replayed.

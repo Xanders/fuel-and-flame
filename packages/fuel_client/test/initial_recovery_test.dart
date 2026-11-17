@@ -4,7 +4,8 @@ import 'package:fuel_client/fuel_client.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:test/test.dart';
-import 'account_owner_test.dart' show accountA, accountB, accountData, fuelReply;
+import 'account_owner_test.dart'
+    show accountA, accountB, accountData, fuelReply;
 import 'client_test.dart' show TestVault;
 import 'operations_test.dart' show journal;
 
@@ -224,6 +225,64 @@ void main() {
         clock.flushMicrotasks();
       });
     });
+  }
+
+  for (final native in [false, true]) {
+    for (final transition in ['suspend', 'dispose']) {
+      test('$native late rejection after $transition cannot rotate proof', () {
+        fakeAsync((clock) {
+          final vault = TestVault();
+          final active = FuelCredential.create();
+          final previous = FuelCredential.create();
+          vault.slots['active'] = active;
+          vault.slots['previous'] = previous;
+          final response = Completer<http.Response>();
+          var posts = 0, rotations = 0;
+          final client = FuelClient(
+            Uri.parse('https://game.example'),
+            journal: journal({}),
+            httpClient: MockClient((request) async {
+              if (request.url.query.isNotEmpty) rotations++;
+              if (request.method == 'POST') {
+                posts++;
+                if (posts == 1) return response.future;
+              }
+              return fuelReply({'account_id': accountA});
+            }),
+          );
+          final game = FuelGameController(client);
+          Object? error;
+          unawaited(
+            game.start(vault: native ? vault : null, newGuest: true).catchError(
+              (Object e) {
+                error = e;
+              },
+            ),
+          );
+          clock.flushMicrotasks();
+          expect(posts, 1);
+          if (transition == 'suspend') {
+            game.suspend();
+          } else {
+            unawaited(game.dispose());
+          }
+          response.complete(rejected(401, 'unauthorized'));
+          clock.flushMicrotasks();
+          clock.elapse(const Duration(seconds: 10));
+          expect(
+            error,
+            isA<FuelException>().having((e) => e.code, 'code', 'cancelled'),
+          );
+          expect(rotations, 0);
+          expect(posts, 1);
+          expect(vault.slots['active'], same(active));
+          expect(vault.slots['previous'], same(previous));
+          unawaited(game.dispose());
+          client.close();
+          clock.flushMicrotasks();
+        });
+      });
+    }
   }
 
   test('storage failure stops before any network admission', () {
