@@ -1,5 +1,43 @@
 part of '../fuel_client.dart';
 
+class _FuelInitialRecovery {
+  final void Function() check;
+  _FuelInitialRecovery(this.check);
+
+  static bool transient(Object error) =>
+      error is http.ClientException ||
+      error is TimeoutException ||
+      error is FuelException &&
+          (error.code == 'timeout' ||
+              error.status >= 500 ||
+              [408, 429].contains(error.status));
+
+  Future<T> read<T>(
+    Future<T> Function() request, {
+    bool pending = false,
+  }) async {
+    for (var attempt = 0; ; attempt++) {
+      check();
+      try {
+        final value = await request();
+        check();
+        return value;
+      } catch (error) {
+        check();
+        final unsettled =
+            pending &&
+            error is FuelException &&
+            error.status == 401 &&
+            error.code == 'unauthorized';
+        if (attempt == 3 || !transient(error) && !unsettled) rethrow;
+        await Future<void>.delayed(
+          Duration(milliseconds: 500 * (1 << attempt)),
+        );
+      }
+    }
+  }
+}
+
 extension FuelIdentity on FuelClient {
   /// Read-only UI hint. A retained binding may have been revoked elsewhere;
   /// switching still uses the normal verified identity transition.

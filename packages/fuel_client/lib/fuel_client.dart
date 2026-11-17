@@ -500,6 +500,12 @@ class FuelClient {
   Future<Json> bootstrapNative(
     CredentialVault vault, {
     bool newGuest = false,
+  }) => _bootstrapNative(vault, newGuest: newGuest);
+
+  Future<Json> _bootstrapNative(
+    CredentialVault vault, {
+    bool newGuest = false,
+    _FuelInitialRecovery? recovery,
   }) => _withIdentity((token) async {
     _vault = vault;
     _journal = vault;
@@ -523,7 +529,7 @@ class FuelClient {
     _credential = selected;
     late Json result;
     try {
-      result = await _request('POST', 'auth/bootstrap', body: {}) as Json;
+      result = await _bootstrapPost(token, recovery);
     } on FuelException catch (error) {
       if (!newGuest ||
           saved == null ||
@@ -536,10 +542,12 @@ class FuelClient {
       await _stored(() => vault.write('active', selected), token);
       await _stored(() => vault.activate(selected), token);
       _credential = selected;
-      result = await _request('POST', 'auth/bootstrap', body: {}) as Json;
+      result = await _bootstrapPost(token, recovery);
     }
     _guard(token);
-    final value = await _readAccount(token);
+    final value =
+        await (recovery?.read(() => _readAccount(token)) ??
+            _readAccount(token));
     if (result['account_id'] != value.id)
       throw const FuelException('invalid_account');
     await _stored(() => vault.activate(selected, accountId: value.id), token);
@@ -547,9 +555,13 @@ class FuelClient {
     return result;
   });
 
-  Future<Json> bootstrapBrowser({bool newGuest = false}) => _withIdentity((
-    token,
-  ) async {
+  Future<Json> bootstrapBrowser({bool newGuest = false}) =>
+      _bootstrapBrowser(newGuest: newGuest);
+
+  Future<Json> _bootstrapBrowser({
+    bool newGuest = false,
+    _FuelInitialRecovery? recovery,
+  }) => _withIdentity((token) async {
     _vault = null;
     _journal = _browserJournal;
     _credential = null;
@@ -565,21 +577,25 @@ class FuelClient {
       _identityUncertain = false;
       return <String, dynamic>{'status': 'deleted'};
     }
-    await _request('GET', 'auth/prepare');
+    await (recovery?.read(() => _request('GET', 'auth/prepare')) ??
+        _request('GET', 'auth/prepare'));
     _guard(token);
     late Json result;
     try {
-      result = await _request('POST', 'auth/bootstrap', body: {}) as Json;
+      result = await _bootstrapPost(token, recovery);
     } on FuelException catch (error) {
       if (!newGuest || error.status != 401 || error.code != 'unauthorized')
         rethrow;
       _guard(token);
+      // Explicit proof rotation is never an automatically retried read.
       await _request('GET', 'auth/prepare', query: {'new': 'true'});
       _guard(token);
-      result = await _request('POST', 'auth/bootstrap', body: {}) as Json;
+      result = await _bootstrapPost(token, recovery);
     }
     _guard(token);
-    final value = await _readAccount(token);
+    final value =
+        await (recovery?.read(() => _readAccount(token)) ??
+            _readAccount(token));
     if (result['account_id'] != value.id)
       throw const FuelException('invalid_account');
     await _stored(
@@ -592,6 +608,30 @@ class FuelClient {
     _publishAccount(value, token);
     return result;
   });
+
+  Future<Json> _bootstrapPost(int token, _FuelInitialRecovery? recovery) async {
+    recovery?.check();
+    try {
+      return await _request('POST', 'auth/bootstrap', body: {}) as Json;
+    } catch (error, stack) {
+      _guard(token);
+      if (recovery == null || !_FuelInitialRecovery.transient(error)) rethrow;
+      try {
+        // A lost write response is reconciled with the same proof, never replayed.
+        final value = await recovery.read(
+          () => _readAccount(token),
+          pending: true,
+        );
+        return {'account_id': value.id};
+      } on FuelException catch (readError) {
+        if (readError.code == 'unauthorized') {
+          // Absence during an uncertain POST cannot authorize new-guest rotation.
+          Error.throwWithStackTrace(error, stack);
+        }
+        rethrow;
+      }
+    }
+  }
 
   Future<Json> createRoom(
     String mode, {

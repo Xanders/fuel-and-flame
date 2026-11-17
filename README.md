@@ -20,14 +20,12 @@ Fuel sessions live in RAM and are lost on backend restart. `session_lost` is exp
 
 ```dart
 final client = FuelClient(Uri.parse('https://game.example'));
-await client.bootstrapBrowser(); // HttpOnly cookie, same-origin browser API
 final game = FuelGameController(client);
-await client.recoverOperations();
-await game.recoverRoom();
+await game.start(); // HttpOnly cookie, bounded initial recovery, then membership
 if (game.sessionId == null) await game.create('duel');
 ```
 
-Native apps use `bootstrapNative(vault)` with an OS-backed `CredentialVault`. Secrets must not be stored in ordinary preferences or logs.
+Native apps use `game.start(vault: vault)` with an OS-backed `CredentialVault`. Secrets must not be stored in ordinary preferences or logs. Standalone `bootstrapBrowser` and `bootstrapNative` remain single-attempt primitives.
 
 ## Install optional bridges from Git
 

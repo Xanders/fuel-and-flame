@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.7 maintenance — bounded initial identity recovery
+
+`game.start` now retries transient ordinary preparation and account reads within one identity transition, with three delayed retries per read phase. A lost bootstrap POST response is reconciled by account reads using the same proof; the POST is never automatically replayed. Exhaustion exposes offline/identityPending and the error without an endless startup loop or a replacement guest. Definite rejection, explicit proof rotation, storage errors and lifecycle/generation fences retain their safeguards. Standalone bootstrap calls remain single-attempt. No wire, storage, dependency or public API change; pin the reviewed maintenance commit.
+
 ## 0.3.7 maintenance — recover before room selection
 
 The controller's existing reconnect backoff now reconciles operations, exact pending account actions and membership when a transient startup failure occurs before room selection. Unknown create/join outcomes automatically read membership without repeating the admission POST, including after HTTP408/429. Attempts remain unbounded; authority, displacement and lifecycle fences remain. Definite command revision-conflict handling is unchanged. No wire, storage, runtime dependency or public API change; pin the reviewed maintenance commit. Tests directly declare the already workspace-locked fake_async development utility.

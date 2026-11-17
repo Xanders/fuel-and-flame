@@ -101,17 +101,31 @@ class FuelGameController {
     if (_status == FuelGameStatus.closed) throw const FuelException('closed');
     if (_status == FuelGameStatus.suspended)
       throw const FuelException('cancelled');
+    late int token, identity;
+    final recovery = _FuelInitialRecovery(() {
+      client._guard(identity);
+      _guard(token, identity);
+    });
     final login = vault == null
-        ? client.bootstrapBrowser(newGuest: newGuest)
-        : client.bootstrapNative(vault, newGuest: newGuest);
+        ? client._bootstrapBrowser(newGuest: newGuest, recovery: recovery)
+        : client._bootstrapNative(
+            vault,
+            newGuest: newGuest,
+            recovery: recovery,
+          );
     // Bootstrap synchronously invalidates the old identity before yielding.
-    final token = _generation, identity = client.generation;
-    await login;
-    _guard(token, identity);
-    if (client.account == null) return;
+    token = _generation;
+    identity = client.generation;
     _status = FuelGameStatus.connecting;
     _updates.notify();
     try {
+      await login;
+      _guard(token, identity);
+      if (client.account == null) {
+        _status = FuelGameStatus.idle;
+        _updates.notify();
+        return;
+      }
       await client.recoverOperations();
       _guard(token, identity);
       if (client._journal.durable) await client.retryPendingActions();
@@ -119,7 +133,15 @@ class FuelGameController {
       await recoverRoom();
     } catch (error) {
       _guard(token, identity);
-      _failed(error);
+      if (client.account == null) {
+        lastError = error;
+        _status = client.accountStatus == FuelAccountStatus.unauthorized
+            ? FuelGameStatus.unauthorized
+            : FuelGameStatus.offline;
+        _updates.notify();
+      } else {
+        _failed(error);
+      }
       rethrow;
     }
   }
