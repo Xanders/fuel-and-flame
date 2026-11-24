@@ -1,6 +1,6 @@
 # SDK use and recovery
 
-Pin the backend and all imported SDK packages to the same reviewed release. These development APIs may change; the envelope's wire_version alone does not imply compatibility with older packages. The core is pure Dart. Flutter and Flame are optional presentation/lifecycle bridges.
+Pin the backend and SDK to a reviewed compatible pair; their release numbers may differ. Pin all imported SDK packages to the same reviewed SDK commit. These development APIs may change; the envelope's wire_version alone does not imply compatibility with older packages. The core is pure Dart. Flutter and Flame are optional presentation/lifecycle bridges.
 
 ## One application owner
 
