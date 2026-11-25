@@ -20,6 +20,121 @@ FuelSnapshot snapshot(String secret, {String revision = '0'}) =>
     });
 
 void main() {
+  for (final retired in [false, true]) {
+    test(
+      'confirmed native activation checks the saved target (retired: $retired)',
+      () async {
+        const accountC = 'cccccccccccccccccccccccccccccccc';
+        final disk = <String, String>{};
+        final vault = RecordCredentialVault(
+          read: (key) async => disk[key],
+          write: (key, value) async => disk[key] = value,
+        );
+        final active = FuelCredential.create(),
+            candidate = FuelCredential.create();
+        await vault.activate(active, accountId: accountB);
+        await vault.write('candidate', candidate);
+        final checked = <String?>[];
+        var targetStatus = 'linked';
+        final client = FuelClient(
+          Uri.parse('https://game.example'),
+          httpClient: MockClient((request) async {
+            final route = request.url.path.substring('/fuel/v1/'.length);
+            final candidateAuth =
+                request.headers['Authorization'] ==
+                'Fuel ${candidate.id}:${candidate.secret}';
+            switch (route) {
+              case 'auth/bootstrap':
+                return fuelReply({'account_id': accountB});
+              case 'account':
+                return fuelReply(
+                  accountData(candidateAuth ? accountC : accountB),
+                );
+              case 'auth/pair/status':
+                checked.add(request.url.queryParameters['target_id']);
+                if (!candidateAuth)
+                  throw StateError('Expected saved candidate proof');
+                if (targetStatus == 'unavailable') {
+                  return http.Response(
+                    '{"wire_version":1,"error":"unavailable"}',
+                    503,
+                  );
+                }
+                return fuelReply({
+                  'status': targetStatus,
+                  'account_id': accountC,
+                });
+              default:
+                throw StateError('Unexpected request $route');
+            }
+          }),
+        );
+        addTearDown(client.close);
+        await client.bootstrapNative(vault);
+        final intent = {
+          'id': randomId(),
+          'kind': 'activate',
+          'from': active.id,
+          'to': candidate.id,
+        };
+        await vault.writeEntry('selection', intent);
+        final generation = client.generation;
+        await expectLater(
+          client.activateTransfer(expectedAccountId: accountA),
+          throwsA(
+            isA<FuelException>().having(
+              (e) => e.code,
+              'code',
+              'selection_changed',
+            ),
+          ),
+        );
+        expect(client.account?.id, accountB);
+        expect(client.generation, generation);
+        expect(await vault.readEntry('selection'), intent);
+        if (retired) {
+          targetStatus = 'unavailable';
+          await expectLater(
+            client.activateTransfer(expectedAccountId: accountC),
+            throwsA(
+              isA<FuelException>().having(
+                (error) => error.status,
+                'status',
+                503,
+              ),
+            ),
+          );
+          expect(await vault.readEntry('selection'), intent);
+          targetStatus = 'retired';
+          await expectLater(
+            client.activateTransfer(expectedAccountId: accountC),
+            throwsA(
+              isA<FuelException>().having(
+                (error) => error.code,
+                'code',
+                'selection_changed',
+              ),
+            ),
+          );
+          expect(checked, [candidate.id, candidate.id, candidate.id]);
+          expect(await vault.readEntry('selection'), isNull);
+          expect((await vault.read('active'))?.id, active.id);
+          expect((await client.refreshAccount()).id, accountB);
+          return;
+        }
+        expect(
+          (await client.activateTransfer(
+            expectedAccountId: accountC,
+          ))['account_id'],
+          accountC,
+        );
+        expect(checked, [candidate.id, candidate.id]);
+        expect(await vault.readEntry('selection'), isNull);
+        expect((await vault.read('previous'))?.id, active.id);
+      },
+    );
+  }
+
   test(
     'canonical realtime propagates a failed ready future without an error callback',
     () async {

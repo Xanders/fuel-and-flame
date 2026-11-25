@@ -1,6 +1,6 @@
 name: fuel_flame
 description: Optional Flame presentation bridge for Fuel snapshots and events.
-version: 0.4.1
+version: 0.4.2
 repository: https://github.com/Xanders/fuel-and-flame
 resolution: workspace
 environment:

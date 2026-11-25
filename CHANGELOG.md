@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.2 — guard confirmed account selection
+
+`activateTransfer(expectedAccountId: ...)` checks the confirmed candidate against the account shown to the user. A browser tab also checks its current account and can reconcile a saved activation after the response is lost. A different selection requires a new choice. Supports Fuel 0.4.0. [Usage](docs/USAGE.md#device-transfer).
+
 ## 0.4.1 — report a transfer recovered on startup
 
 `FuelClient.recoveredBasicTransferOnStartup` reports when browser or native startup confirmed a saved basic transfer and selected the transferred account. It is scoped to the current identity generation. Supports Fuel 0.4.0. [Usage](docs/USAGE.md#device-transfer).
