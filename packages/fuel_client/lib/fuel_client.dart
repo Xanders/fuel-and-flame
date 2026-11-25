@@ -283,28 +283,44 @@ class FuelClient {
     }
   }
 
-  Future<T> _withIdentity<T>(Future<T> Function(int token) operation) {
+  Future<T> _withIdentity<T>(
+    Future<T> Function(int token) operation, {
+    Future<void> Function(int token)? beforeTransition,
+  }) {
     if (_closed || _identityChanging)
       return Future.error(
         FuelException(_closed ? 'closed' : 'identity_changing'),
       );
     _identityChanging = true;
-    _identityUncertain = true;
-    _advanceIdentity();
-    final token = generation;
-    _accountStatus = FuelAccountStatus.loading;
-    _updates.notify();
+    var token = generation;
+    var transitioned = false;
+    void beginTransition() {
+      _identityUncertain = true;
+      _advanceIdentity();
+      token = generation;
+      transitioned = true;
+      _accountStatus = FuelAccountStatus.loading;
+      _updates.notify();
+    }
+
+    if (beforeTransition == null) beginTransition();
     final task = () async {
       try {
         _guard(token);
         final result = await _withBrowserIdentity(() async {
           _guard(token);
+          if (beforeTransition != null) {
+            await beforeTransition(token);
+            _guard(token);
+            beginTransition();
+          }
           return operation(token);
         });
         _guard(token);
         return result;
       } catch (error) {
         _guard(token);
+        if (!transitioned) rethrow;
         lastError = error;
         final code = error is FuelException ? error.code : '';
         if (code == 'unauthorized') _identityUncertain = false;

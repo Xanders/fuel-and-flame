@@ -23,6 +23,126 @@ http.Response basicReply() => http.Response.bytes(
 );
 
 void main() {
+  for (final linked in [false, true]) {
+    test(
+      'an unanswered deletion cannot strand transfer recovery (linked: $linked)',
+      () async {
+        final shared = journal({});
+        const retained = 'cccccccccccccccccccccccccccccccc';
+        String active = 'old';
+        var revoked = false, receiptAvailable = false, deletes = 0;
+        FuelClient open() => FuelClient(
+          Uri.parse('https://game.example'),
+          journal: shared,
+          httpClient: MockClient((request) async {
+            final path = request.url.path.substring('/fuel/v1/'.length);
+            final account = switch (active) {
+              'old' => accountB,
+              'target' => accountA,
+              _ => retained,
+            };
+            final valid = active != 'old' || !revoked;
+            final denied = http.Response(
+              '{"wire_version":1,"error":"unauthorized"}',
+              401,
+            );
+            switch (path) {
+              case 'auth/bootstrap':
+                return valid ? fuelReply({'account_id': account}) : denied;
+              case 'account':
+                return valid ? fuelReply(accountData(account)) : denied;
+              case 'auth/selection':
+                return fuelReply({
+                  'current': {
+                    'binding_id': active,
+                    'account_id': valid ? account : null,
+                  },
+                  'previous': {
+                    'binding_id': 'retained',
+                    'account_id': retained,
+                  },
+                  'candidate_id': 'target',
+                });
+              case 'auth/pair/redeem':
+                throw http.ClientException('Held redemption');
+              case 'auth/pair/status':
+                return revoked && linked ? basicReply() : denied;
+              case 'auth/pair/abandon':
+                return fuelReply({'status': 'retired'});
+              case 'auth/pair/activate':
+                active = 'target';
+                return fuelReply({'account_id': accountA});
+              case 'auth/delete/status':
+                if (receiptAvailable) {
+                  return fuelReply({
+                    'status': 'deleted',
+                    'removed_bindings': ['old', 'target'],
+                  });
+                }
+                return fuelReply({'status': 'unknown'});
+              case 'auth/delete/with-transfer':
+                if (++deletes == 1) throw http.ClientException('Held deletion');
+                return denied;
+              case 'auth/switch':
+                active = 'retained';
+                return fuelReply({'account_id': retained});
+            }
+            return fuelReply({});
+          }),
+        );
+        final first = open();
+        addTearDown(first.close);
+        await first.bootstrapBrowser();
+        await first.prepareTransfer();
+        await expectLater(
+          first.redeemBasicTransfer('ACDEFH'),
+          throwsA(isA<http.ClientException>()),
+        );
+        final prior = open();
+        addTearDown(prior.close);
+        await prior.bootstrapBrowser();
+        await expectLater(
+          prior.deleteAccount(confirmed: true),
+          throwsA(isA<http.ClientException>()),
+        );
+        final key = 'account:$accountB:deletion';
+        final proof = (await shared.readEntry(key))?['proof'];
+        expect(proof, isA<String>());
+        revoked = true;
+        final reopened = open();
+        addTearDown(reopened.close);
+        if (linked) {
+          await reopened.bootstrapBrowser();
+          expect(reopened.account?.id, accountA);
+        } else {
+          await expectLater(
+            reopened.bootstrapBrowser(),
+            throwsA(
+              isA<FuelException>().having(
+                (e) => e.code,
+                'code',
+                'unauthorized',
+              ),
+            ),
+          );
+          await reopened.switchPrevious();
+          expect(reopened.account?.id, retained);
+        }
+        expect(await shared.readEntry('selection'), isNull);
+        expect((await shared.readEntry(key))?['proof'], proof);
+        await reopened.bootstrapBrowser();
+        expect(deletes, 2);
+        if (!linked) {
+          receiptAvailable = true;
+          await reopened.bootstrapBrowser();
+          expect(reopened.account?.id, retained);
+          expect(await shared.readEntry(key), isNull);
+          expect(deletes, 2);
+        }
+      },
+    );
+  }
+
   for (final revokedTarget in [true, false]) {
     test(
       'recovers after independent revocation (target: $revokedTarget)',
@@ -620,5 +740,14 @@ void main() {
     expect((await vault.read('active'))?.id, candidate?.id);
     expect((await vault.read('previous'))?.id, previous.id);
     expect(posts, 1);
+    final generation = client.generation;
+    await expectLater(
+      client.recoverBasicTransfer(),
+      throwsA(
+        isA<FuelException>().having((e) => e.code, 'code', 'missing_transfer'),
+      ),
+    );
+    expect(client.generation, generation);
+    expect((await client.refreshAccount()).id, accountA);
   });
 }

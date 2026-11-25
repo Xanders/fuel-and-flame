@@ -209,9 +209,16 @@ extension FuelIdentity on FuelClient {
         _publishAccount(previous, token);
         return (null, error);
       }
-    });
+    }, beforeTransition: code == null ? _requireBasicSelection : null);
     if (rejected != null) throw rejected;
     return result!;
+  }
+
+  Future<void> _requireBasicSelection(int token) async {
+    final intent = await _stored(() => _journal.readEntry('selection'), token);
+    if (intent == null) throw const FuelException('missing_transfer');
+    if (intent['kind'] != 'basic')
+      throw const FuelException('pending_identity');
   }
 
   Future<Json> _saveBasicSelection(int token) async {
@@ -594,14 +601,14 @@ extension FuelIdentity on FuelClient {
       final intent = await _stored(
         () => _journal.updateEntry(
           'account:$actor:deletion',
-          (old) =>
-              old ??
-              {
-                'account_id': actor,
-                'proof': randomId(32),
-                if (transfer?['kind'] == 'basic')
-                  'abandon_candidate_id': transfer!['to'],
-              },
+          (old) => old != null && old['status_only'] != true
+              ? old
+              : {
+                  'account_id': actor,
+                  'proof': old?['proof'] ?? randomId(32),
+                  if (transfer?['kind'] == 'basic')
+                    'abandon_candidate_id': transfer!['to'],
+                },
         ),
         token,
       );
@@ -631,19 +638,24 @@ extension FuelIdentity on FuelClient {
       (entry) => entry.key.endsWith(':deletion'),
     )) {
       try {
-        await _finishDeletion(entry.value, token);
+        await _finishDeletion(entry.value, token, recovering: true);
       } on FuelException catch (error) {
         if (error.code != 'transfer_completed') rethrow;
       }
     }
   }
 
-  Future<void> _finishDeletion(Json intent, int token) async {
+  Future<void> _finishDeletion(
+    Json intent,
+    int token, {
+    bool recovering = false,
+  }) async {
     final candidate = intent['abandon_candidate_id'] as String?;
     var result =
         await _request('POST', 'auth/delete/status', body: intent) as Json;
     _guard(token);
     if (result['status'] == 'unknown') {
+      if (intent['status_only'] == true) return;
       final body = {...intent, 'confirmed': true};
       final vault = _vault;
       if (candidate != null && vault != null) {
@@ -660,15 +672,25 @@ extension FuelIdentity on FuelClient {
             : 'auth/delete/with-transfer';
         result = await _request('POST', path, body: body) as Json;
       } on FuelException catch (error) {
-        if (candidate == null || error.code != 'transfer_completed') rethrow;
+        if (candidate == null) rethrow;
+        final completed = error.code == 'transfer_completed';
+        final authorityLost =
+            error.status == 401 && error.code == 'unauthorized';
+        if (!completed && !authorityLost) rethrow;
         await _stored(
           () => _journal.updateEntry(
             'account:${intent['account_id']}:deletion',
-            (old) => old?['proof'] == intent['proof'] ? null : old,
+            (old) {
+              if (old == null || old['proof'] != intent['proof']) return old;
+              return completed ? null : {...old, 'status_only': true};
+            },
           ),
           token,
         );
-        rethrow;
+        if (!authorityLost || !recovering) rethrow;
+        result =
+            await _request('POST', 'auth/delete/status', body: intent) as Json;
+        if (result['status'] == 'unknown') return;
       }
     }
     _guard(token);
