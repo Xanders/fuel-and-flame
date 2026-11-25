@@ -61,13 +61,15 @@ final issued = await deviceA.issuePair(supportsBasic: true);
 await deviceB.prepareTransfer(vault: vaultOnNative);
 final completed = await deviceB.redeemBasicTransfer(enteredCode);
 // deviceB.account is now A's account; its own guest remains available.
-showDone(completed['emojis'] as List);
+if (completed['emojis'] case final List emojis) showDone(emojis);
 // On A, read when connected, with this device's own current credential.
 final notice = await deviceA.issuedPair(issued['id'] as String);
 if (notice['status'] == 'linked') showDone(notice['emojis'] as List);
 ```
 
-Pass no vault on web. After an uncertain response, keep the candidate and call `recoverBasicTransfer()` to check for an already committed result or retry the exact same code once the connection is available. Before recovery after a native app restart, initialize the same vault with normal startup. Do not pass `newAttempt: true` during recovery. A can keep the issued ID and read it again when it reconnects, until the receipt expires one day after the code expiry. Use bounded polling while the transfer is visible and deduplicate the notice by ID. No transfer push channel is provided. The server owns the ordered three emoji. Show them on each participating device in a “Done!” notice, with comparison text, a support link and a dismiss action. The consumer can change or omit that UI without changing access.
+Pass no vault on web. The SDK saves the source and candidate IDs in the selection journal before sending the code. Normal startup with the same storage can resume a committed selection after a lost answer. If the app is still open, call `recoverBasicTransfer()` to check the same proof, or resubmit the code on that proof. A `transfer_pending` result means the server has no confirmed link for the saved attempt yet. Keep the candidate, and if the code has expired, ask A for a fresh code. Candidate preparation is blocked while this selection is pending. A first definitive invalid-code result leaves a previously verified guest usable. A completion can omit the notice after expiry and still select the account.
+
+A can keep the issued ID and read it again when it reconnects, until the receipt expires one day after the code expiry. If B resumed during startup, it can read the notice with `pairStatus()` on the retained candidate. Use bounded polling while the transfer is visible and deduplicate by receipt ID. Fuel has no transfer push channel. Show the three ordered server emoji under “Done!” with a comparison sentence (“If the same symbols appear on both devices, you're all set”), a support link and an “OK” dismiss action. The consumer owns or can omit this UI.
 
 In confirmed mode, A issues the code and B calls `prepareTransfer` then `requestPair(code)`. A compares the phrase shown on both devices and approves the exact ID with `approvePair`. B checks `pairStatus` and calls `activateTransfer` only after it is linked. `switchPrevious` returns to the retained guest in either mode, without merging progress. A successful link is idempotent. Preparation retains the outstanding proof; `newAttempt` intentionally abandons it. See the [server upgrade guide](https://github.com/Xanders/fuel/blob/v0.4.0/docs/MIGRATION.md#device-transfer-at-040) before changing modes.
 
