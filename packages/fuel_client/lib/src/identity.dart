@@ -94,7 +94,7 @@ extension FuelIdentity on FuelClient {
           await request(
             'GET',
             'auth/pair/prepare',
-            query: {if (newAttempt) 'new': 'true'},
+            query: {'flow': 'basic-v1', if (newAttempt) 'new': 'true'},
           );
         } else {
           _vault = storage;
@@ -147,7 +147,6 @@ extension FuelIdentity on FuelClient {
     if (_preparingTransfer) {
       throw const FuelException('identity_changing');
     }
-    final priorAccount = account?.id;
     final (result, rejected) = await _withIdentity<(Json?, FuelException?)>((
       token,
     ) async {
@@ -180,36 +179,29 @@ extension FuelIdentity on FuelClient {
                   )
                   as Json;
         } on FuelException catch (error) {
-          // An earlier POST with unknown outcome may still commit. Only a
-          // definite rejection of the first submission releases its fence.
-          if (!fresh || error.status != 400 || error.code != 'invalid_code') {
-            rethrow;
-          }
-          final id = intent['id'];
-          await _stored(
-            () => _journal.updateEntry(
-              'selection',
-              (old) => old?['id'] == id ? null : old,
-            ),
-            token,
-          );
-          if (priorAccount != null) {
-            final value = await _readAccount(token);
-            if (value.id != priorAccount) {
-              throw const FuelException('selection_changed');
-            }
-            _publishAccount(value, token);
-          }
+          if (!_basicRejectionBeforeCommit(error)) rethrow;
+          // A rejected retry does not disprove an earlier unknown POST.
+          if (fresh) await _discardBasicSelection(intent, token);
+          final previous = await _verifiedBasicSource(intent, token);
+          if (previous != null) _publishAccount(previous, token);
           return (null, error);
         }
       }
-      final (value, linked) = await _finishBasicSelection(
-        intent,
-        token,
-        receipt,
-      );
-      _publishAccount(value, token);
-      return (linked, null);
+      try {
+        final (value, linked) = await _finishBasicSelection(
+          intent,
+          token,
+          receipt,
+        );
+        _publishAccount(value, token);
+        return (linked, null);
+      } on FuelException catch (error) {
+        if (error.code != 'transfer_pending') rethrow;
+        final previous = await _verifiedBasicSource(intent, token);
+        if (previous == null) rethrow;
+        _publishAccount(previous, token);
+        return (null, error);
+      }
     });
     if (rejected != null) throw rejected;
     return result!;
@@ -251,6 +243,88 @@ extension FuelIdentity on FuelClient {
     );
     if (proof == null) throw const FuelException('missing_candidate');
     return proof;
+  }
+
+  bool _basicRejectionBeforeCommit(FuelException error) =>
+      switch ((error.status, error.code)) {
+        (400, 'invalid_code') ||
+        (400, 'selection_changed') ||
+        (401, 'unauthorized') ||
+        (403, 'forbidden') ||
+        (429, 'rate_limited') ||
+        (503, 'maintenance') => true,
+        _ => false,
+      };
+
+  Future<void> _discardBasicSelection(Json intent, int token) async {
+    await _stored(
+      () => _journal.updateEntry(
+        'selection',
+        (old) => old?['id'] == intent['id'] ? null : old,
+      ),
+      token,
+    );
+  }
+
+  // An unlinked read does not disprove a delayed POST. Verify the exact old
+  // selected proof, leaving the frozen candidate and intent in place.
+  Future<FuelAccount?> _verifiedBasicSource(Json intent, int token) async {
+    final from = intent['from'] as String?;
+    if (from == null) return null;
+    if (_vault case final vault?) {
+      final active = await _stored(() => vault.read('active'), token);
+      if (active?.id != from) return null;
+      final value = FuelAccount.fromJson(
+        await _request('GET', 'account', authentication: active) as Json,
+      );
+      _guard(token);
+      _credential = active;
+      return value;
+    }
+    final slots = await _request('GET', 'auth/selection') as Json;
+    final current = slots['current'] as Json?;
+    final previous = slots['previous'] as Json?;
+    final revokedTarget =
+        current != null &&
+        current['binding_id'] == intent['to'] &&
+        current['account_id'] == null &&
+        previous?['binding_id'] == from;
+    final expected = revokedTarget
+        ? previous!['account_id']
+        : (current?['binding_id'] == from ? current!['account_id'] : null);
+    if (expected is! String) return null;
+    if (revokedTarget) {
+      final saved = await _stored(
+        () => _journal.updateEntry(
+          'selection',
+          (old) => old?['id'] == intent['id']
+              ? {...old!, 'restore_source': true}
+              : old,
+        ),
+        token,
+      );
+      if (saved?['id'] != intent['id']) {
+        throw const FuelException('selection_changed');
+      }
+      final selected =
+          await _request(
+                'POST',
+                'auth/switch',
+                body: {'from': intent['to'], 'to': from},
+              )
+              as Json;
+      if (selected['account_id'] != expected) {
+        throw const FuelException('selection_changed');
+      }
+    }
+    final value = await _readAccount(token);
+    if (value.id != expected) {
+      throw const FuelException('selection_changed');
+    }
+    if (revokedTarget || intent['restore_source'] == true) {
+      await _discardBasicSelection(intent, token);
+    }
+    return value;
   }
 
   Future<(FuelAccount, Json)> _finishBasicSelection(
@@ -396,8 +470,15 @@ extension FuelIdentity on FuelClient {
     final intent = await _stored(() => _journal.readEntry('selection'), token);
     if (intent == null) return null;
     if (intent['kind'] == 'basic') {
-      final (value, _) = await _finishBasicSelection(intent, token, null);
-      return value;
+      try {
+        final (value, _) = await _finishBasicSelection(intent, token, null);
+        return value;
+      } on FuelException catch (error) {
+        if (error.code != 'transfer_pending') rethrow;
+        final previous = await _verifiedBasicSource(intent, token);
+        if (previous == null) rethrow;
+        return previous;
+      }
     }
     try {
       FuelAccount value;
@@ -429,7 +510,7 @@ extension FuelIdentity on FuelClient {
                       : 'auth/pair/activate',
                   body: intent['kind'] == 'switch'
                       ? {'from': intent['from'], 'to': intent['to']}
-                      : {'target_id': intent['to']},
+                      : {'target_id': intent['to'], 'from': intent['from']},
                 )
                 as Json;
         value = await _readAccount(token);
