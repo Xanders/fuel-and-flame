@@ -23,6 +23,96 @@ http.Response basicReply() => http.Response.bytes(
 );
 
 void main() {
+  for (final revokedTarget in [true, false]) {
+    test(
+      'recovers after independent revocation (target: $revokedTarget)',
+      () async {
+        final shared = journal({});
+        const retained = 'cccccccccccccccccccccccccccccccc';
+        var revoked = false, previous = false, abandons = 0;
+        FuelClient open() => FuelClient(
+          Uri.parse('https://game.example'),
+          journal: shared,
+          httpClient: MockClient((request) async {
+            final path = request.url.path.substring('/fuel/v1/'.length);
+            final valid = previous || !revoked || revokedTarget;
+            final actor = previous ? retained : accountB;
+            switch (path) {
+              case 'auth/bootstrap':
+                if (!valid)
+                  return http.Response(
+                    '{"wire_version":1,"error":"unauthorized"}',
+                    401,
+                  );
+                return fuelReply({'account_id': actor});
+              case 'auth/selection':
+                return fuelReply({
+                  'current': {
+                    'binding_id': previous ? 'retained' : 'old',
+                    'account_id': valid ? actor : null,
+                  },
+                  'previous': {
+                    'binding_id': 'retained',
+                    'account_id': retained,
+                  },
+                  'candidate_id': 'candidate',
+                });
+              case 'auth/pair/redeem':
+                throw http.ClientException('No response');
+              case 'auth/pair/status':
+                expect(request.url.queryParameters['target_id'], 'candidate');
+                if (revokedTarget) return fuelReply({'status': 'retired'});
+                return http.Response(
+                  '{"wire_version":1,"error":"unauthorized"}',
+                  401,
+                );
+              case 'auth/pair/abandon':
+                expect(jsonDecode(request.body), {'target_id': 'candidate'});
+                abandons++;
+                return fuelReply({'status': 'retired'});
+              case 'auth/switch':
+                previous = true;
+                return fuelReply({'account_id': retained});
+              case 'account':
+                return fuelReply(accountData(actor));
+            }
+            return fuelReply({});
+          }),
+        );
+        final first = open();
+        addTearDown(first.close);
+        await first.bootstrapBrowser();
+        await first.prepareTransfer();
+        await expectLater(
+          first.redeemBasicTransfer('ACDEFH'),
+          throwsA(isA<http.ClientException>()),
+        );
+        revoked = true;
+        final reopened = open();
+        addTearDown(reopened.close);
+        if (revokedTarget) {
+          await reopened.bootstrapBrowser();
+          expect(reopened.account?.id, accountB);
+        } else {
+          await expectLater(
+            reopened.bootstrapBrowser(),
+            throwsA(
+              isA<FuelException>().having(
+                (e) => e.code,
+                'code',
+                'unauthorized',
+              ),
+            ),
+          );
+        }
+        expect(abandons, revokedTarget ? 0 : 1);
+        expect(await shared.readEntry('selection'), isNull);
+        await reopened.switchPrevious();
+        expect(reopened.account?.id, retained);
+      },
+    );
+  }
+
   for (final linked in [false, true]) {
     test('deleting B reconciles a lost transfer (linked: $linked)', () async {
       final shared = journal({});

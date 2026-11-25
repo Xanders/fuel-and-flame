@@ -112,10 +112,15 @@ extension FuelIdentity on FuelClient {
                   await request(
                         'GET',
                         'auth/pair/status',
+                        query: {'target_id': candidate.id},
                         authentication: candidate,
                       )
                       as Json;
-              renew = ['expired', 'cancelled'].contains(result['status']);
+              renew = [
+                'expired',
+                'cancelled',
+                'retired',
+              ].contains(result['status']);
             } on FuelException catch (error) {
               if (!['unauthorized', 'invalid_code'].contains(error.code))
                 rethrow;
@@ -196,8 +201,10 @@ extension FuelIdentity on FuelClient {
         _publishAccount(value, token);
         return (linked, null);
       } on FuelException catch (error) {
-        if (error.code != 'transfer_pending') rethrow;
+        final retired = error.code == 'transfer_retired';
+        if (!retired && error.code != 'transfer_pending') rethrow;
         final previous = await _verifiedBasicSource(intent, token);
+        if (retired) await _discardBasicSelection(intent, token);
         if (previous == null) rethrow;
         _publishAccount(previous, token);
         return (null, error);
@@ -274,12 +281,17 @@ extension FuelIdentity on FuelClient {
     if (_vault case final vault?) {
       final active = await _stored(() => vault.read('active'), token);
       if (active?.id != from) return null;
-      final value = FuelAccount.fromJson(
-        await _request('GET', 'account', authentication: active) as Json,
-      );
-      _guard(token);
-      _credential = active;
-      return value;
+      try {
+        final value = FuelAccount.fromJson(
+          await _request('GET', 'account', authentication: active) as Json,
+        );
+        _guard(token);
+        _credential = active;
+        return value;
+      } on FuelException catch (error) {
+        if (error.status != 401 || error.code != 'unauthorized') rethrow;
+        return null;
+      }
     }
     final slots = await _request('GET', 'auth/selection') as Json;
     final current = slots['current'] as Json?;
@@ -350,6 +362,9 @@ extension FuelIdentity on FuelClient {
         if (!['invalid_code', 'unauthorized'].contains(error.code)) rethrow;
         throw const FuelException('transfer_pending');
       }
+    }
+    if (receipt['status'] == 'retired') {
+      throw const FuelException('transfer_retired');
     }
     final accountId = receipt['account_id'];
     if (receipt['status'] != 'linked' ||
@@ -474,10 +489,31 @@ extension FuelIdentity on FuelClient {
         final (value, _) = await _finishBasicSelection(intent, token, null);
         return value;
       } on FuelException catch (error) {
-        if (error.code != 'transfer_pending') rethrow;
+        final retired = error.code == 'transfer_retired';
+        if (!retired && error.code != 'transfer_pending') rethrow;
         final previous = await _verifiedBasicSource(intent, token);
-        if (previous == null) rethrow;
-        return previous;
+        if (retired) {
+          await _discardBasicSelection(intent, token);
+          return previous;
+        }
+        if (previous != null) return previous;
+        try {
+          final result =
+              await _request(
+                    'POST',
+                    'auth/pair/abandon',
+                    body: {'target_id': intent['to']},
+                    authentication: await _basicProof(intent, token),
+                  )
+                  as Json;
+          if (result['status'] != 'retired') throw error;
+          await _discardBasicSelection(intent, token);
+          return null;
+        } on FuelException catch (settlement) {
+          if (settlement.code != 'transfer_completed') rethrow;
+          final (value, _) = await _finishBasicSelection(intent, token, null);
+          return value;
+        }
       }
     }
     try {
