@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.0 — basic device transfer
+
+With Fuel 0.4.0, `issuePair(supportsBasic: true)` supports a basic-mode server. `redeemBasicTransfer` links and selects the prepared candidate in one user action and returns the shared server completion notice. `recoverBasicTransfer` checks the same proof after an unknown result without resubmitting the code. The confirmed transfer methods remain available. [Usage](docs/USAGE.md#device-transfer).
+
 ## 0.3.7 maintenance — bounded initial identity recovery
 
 `game.start` now retries transient ordinary preparation and account reads within one identity transition, with three delayed retries per read phase. A lost bootstrap POST response is reconciled by account reads using the same proof; the POST is never automatically replayed. Exhaustion exposes offline/identityPending and the error without an endless startup loop or a replacement guest. Definite rejection, explicit proof rotation, storage errors and lifecycle/generation fences retain their safeguards. Standalone bootstrap calls remain single-attempt. No wire, storage, dependency or public API change; pin the reviewed maintenance commit.

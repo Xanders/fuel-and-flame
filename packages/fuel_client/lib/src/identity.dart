@@ -127,6 +127,93 @@ extension FuelIdentity on FuelClient {
 
   Future<Json> activateTransfer({CredentialVault? vault}) =>
       _changeSelection('activate', vault);
+
+  /// Redeems a basic code with the proof saved by [prepareTransfer].
+  Future<Json> redeemBasicTransfer(String code) =>
+      _selectBasicTransfer(normalizeCode(code));
+
+  /// After a lost response, selects an already linked basic candidate.
+  /// Never submits the code again or links a new candidate.
+  Future<Json> recoverBasicTransfer() => _selectBasicTransfer(null);
+
+  Future<Json> _selectBasicTransfer(String? code) {
+    if (_preparingTransfer) {
+      return Future.error(const FuelException('identity_changing'));
+    }
+    return _withIdentity((token) async {
+      if (!_journal.durable) {
+        throw const FuelException('durable_storage_required');
+      }
+      await _resumeDeletions(token);
+      if (await _stored(() => _journal.readEntry('selection'), token) != null) {
+        throw const FuelException('pending_identity');
+      }
+      final vault = _vault;
+      final proof = vault == null
+          ? null
+          : await _stored(() => vault.read('candidate'), token);
+      if (vault != null && proof == null) {
+        throw const FuelException('missing_candidate');
+      }
+      final result = code == null
+          ? await _request('GET', 'auth/pair/status', authentication: proof)
+          : await _request(
+              'POST',
+              'auth/pair/redeem',
+              body: {'code': code},
+              authentication: proof,
+            );
+      final receipt = result as Json;
+      final emojis = receipt['emojis'];
+      final targetAccount = receipt['account_id'];
+      if (receipt['status'] != 'linked' ||
+          receipt['mode'] != 'basic' ||
+          receipt['id'] is! String ||
+          targetAccount is! String ||
+          emojis is! List ||
+          emojis.length != 3 ||
+          emojis.any((emoji) => emoji is! String || emoji.isEmpty)) {
+        throw const FuelException('transfer_unconfirmed');
+      }
+      if (vault == null && code == null) {
+        final selected = await _request('GET', 'auth/selection') as Json;
+        final id = selected['candidate_id'];
+        if (id is! String) throw const FuelException('missing_candidate');
+        final activation =
+            await _request(
+                  'POST',
+                  'auth/pair/activate',
+                  body: {'target_id': id},
+                )
+                as Json;
+        if (activation['account_id'] != targetAccount) {
+          throw const FuelException('selection_changed');
+        }
+      }
+      final value = FuelAccount.fromJson(
+        await _request('GET', 'account', authentication: proof) as Json,
+      );
+      _guard(token);
+      if (value.id != targetAccount) {
+        throw const FuelException('selection_changed');
+      }
+      if (vault != null) {
+        await _stored(() => vault.activate(proof!, accountId: value.id), token);
+        _credential = proof;
+      } else {
+        await _stored(
+          () => _journal.writeEntry('identity', {
+            'kind': 'active',
+            'account_id': value.id,
+          }),
+          token,
+        );
+      }
+      _publishAccount(value, token);
+      return receipt;
+    });
+  }
+
   Future<void> switchPrevious({CredentialVault? vault}) async {
     await _changeSelection('switch', vault);
   }

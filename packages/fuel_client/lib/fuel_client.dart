@@ -478,6 +478,7 @@ class FuelClient {
       final candidatePath = [
         'auth/pair/status',
         'auth/pair/request',
+        'auth/pair/redeem',
         'auth/pair/activate',
       ].contains(path);
       if (json['error'] == 'unauthorized' &&
@@ -685,8 +686,13 @@ class FuelClient {
     return result;
   }
 
-  Future<Json> issuePair() async =>
-      await request('POST', 'auth/pair', body: {}) as Json;
+  Future<Json> issuePair({bool supportsBasic = false}) async =>
+      await request(
+            'POST',
+            'auth/pair',
+            body: {if (supportsBasic) 'flow': 'basic-v1'},
+          )
+          as Json;
   Future<List<dynamic>> pendingPairs() async =>
       await request('GET', 'auth/pair/pending') as List<dynamic>;
   Future<Json> issuedPair(String id) async =>

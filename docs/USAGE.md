@@ -51,7 +51,25 @@ With Fuel0.3.6 or later, browser `game.start(newGuest:true)` follows the same ex
 
 For explicit custom ports, FuelJournal supplies atomic updateEntry, completeSelection and completeDeletion semantics. A native CredentialVault additionally implements read/write/activate, including conditional selectionId completion. Use the supplied record implementations rather than copying rotation logic. MemoryFuelJournal is intentionally nondurable; persistent actions/deletion/account changes require a durable journal.
 
-A issues issuePair; B calls prepareTransfer then requestPair(code). A compares the phrase from pendingPairs/issuedPair and approves the exact ID. B checks pairStatus then activateTransfer. switchPrevious returns to a retained guest without merging progress. Linked activation is idempotent. Preparation retains an outstanding proof; newAttempt is a deliberate abandonment, never an automatic timeout response.
+### Device transfer
+
+Fuel 0.4.0 with SDK 0.4.0 supports both server modes. A calls `issuePair(supportsBasic: true)` when its UI supports the basic flow and reads the server's `mode`. B uses the matching flow for the deployed backend. Code input is one action on a basic server:
+
+```dart
+final issued = await deviceA.issuePair(supportsBasic: true);
+// On B, prepare the proof once before submitting the entered code.
+await deviceB.prepareTransfer(vault: vaultOnNative);
+final completed = await deviceB.redeemBasicTransfer(enteredCode);
+// deviceB.account is now A's account; its own guest remains available.
+showDone(completed['emojis'] as List);
+// On A, read when connected, with this device's own current credential.
+final notice = await deviceA.issuedPair(issued['id'] as String);
+if (notice['status'] == 'linked') showDone(notice['emojis'] as List);
+```
+
+Pass no vault on web. After an uncertain response, keep the candidate and call `recoverBasicTransfer()` to check for an already committed result or retry the exact same code once the connection is available. Before recovery after a native app restart, initialize the same vault with normal startup. Do not pass `newAttempt: true` during recovery. A can keep the issued ID and read it again when it reconnects, until the receipt expires one day after the code expiry. Use bounded polling while the transfer is visible and deduplicate the notice by ID. No transfer push channel is provided. The server owns the ordered three emoji. Show them on each participating device in a “Done!” notice, with comparison text, a support link and a dismiss action. The consumer can change or omit that UI without changing access.
+
+In confirmed mode, A issues the code and B calls `prepareTransfer` then `requestPair(code)`. A compares the phrase shown on both devices and approves the exact ID with `approvePair`. B checks `pairStatus` and calls `activateTransfer` only after it is linked. `switchPrevious` returns to the retained guest in either mode, without merging progress. A successful link is idempotent. Preparation retains the outstanding proof; `newAttempt` intentionally abandons it. See the [server upgrade guide](https://github.com/Xanders/fuel/blob/v0.4.0/docs/MIGRATION.md#device-transfer-at-040) before changing modes.
 
 `await fuel.hasPreviousAccount()` is a read-only availability hint for account settings, including after confirmed deletion when a previous account may survive. It reads the native vault or browser selection metadata through the SDK, without changing selection, publishing account data, creating a guest or returning credentials. Use it to offer `switchPrevious` only when a different retained binding exists. The hint does not prove that the server still accepts that binding; the ordinary verified transition remains authoritative. Identity changes fence stale replies, and storage/network errors propagate instead of becoming a false absence.
 
