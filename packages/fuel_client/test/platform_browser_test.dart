@@ -13,6 +13,117 @@ import 'account_owner_test.dart'
 import 'operations_test.dart' show operation;
 
 void main() {
+  for (final scenario in [
+    'current',
+    'linked',
+    'pending',
+    'expired',
+    'offline',
+    'source changed',
+    'source changed with pending receipt',
+  ]) {
+    test('fresh Basic requires an unused candidate ($scenario)', () async {
+      final alreadyCurrent = scenario == 'current';
+      final changedSource = scenario.startsWith('source changed');
+      final pendingReceipt = scenario == 'source changed with pending receipt';
+      final base = Uri.parse(
+        'https://game.example/basic-fresh-${randomId()}/fuel/v1',
+      );
+      final disk = <String, String>{};
+      final journal = RecordJournal(
+        read: (key) async => disk[key],
+        write: (key, value) async => disk[key] = value,
+      );
+      final active = alreadyCurrent ? 'candidate' : 'guest';
+      var account = alreadyCurrent ? accountA : accountB;
+      final statusTargets = <String?>[];
+      var posts = 0, receiptReads = 0;
+      final client = FuelClient(
+        base,
+        journal: journal,
+        httpClient: MockClient((request) async {
+          switch (request.url.path.split('/fuel/v1/').last) {
+            case 'auth/prepare':
+              return fuelReply({});
+            case 'auth/bootstrap':
+              return fuelReply({'account_id': account});
+            case 'account':
+              return fuelReply(accountData(account));
+            case 'auth/delete/status':
+              receiptReads++;
+              return fuelReply({'status': 'unknown'});
+            case 'auth/selection':
+              return fuelReply({
+                'current': {'binding_id': active, 'account_id': account},
+                'candidate_id': 'candidate',
+              });
+            case 'auth/pair/status':
+              statusTargets.add(request.url.queryParameters['target_id']);
+              if (changedSource) {
+                return http.Response(
+                  '{"wire_version":1,"error":"unauthorized"}',
+                  401,
+                );
+              }
+              if (scenario == 'offline') {
+                throw http.ClientException('Candidate status unavailable');
+              }
+              if (scenario == 'pending' || scenario == 'expired') {
+                return fuelReply({'status': scenario});
+              }
+              return fuelReply({
+                'status': 'linked',
+                'mode': 'basic',
+                'account_id': accountA,
+              });
+            case 'auth/pair/redeem':
+              posts++;
+              return http.Response(
+                '{"wire_version":1,"error":"invalid_code"}',
+                400,
+              );
+            default:
+              throw StateError('Unexpected request ${request.url.path}');
+          }
+        }),
+      );
+      addTearDown(client.close);
+      await client.bootstrapBrowser();
+      const deletionKey = 'account:$accountB:deletion';
+      if (pendingReceipt) {
+        await journal.writeEntry(deletionKey, {
+          'account_id': accountB,
+          'proof': randomId(32),
+          'status_only': true,
+        });
+      }
+      if (changedSource) account = accountA;
+      await expectLater(
+        client.redeemBasicTransfer('ACDEFH'),
+        throwsA(
+          scenario == 'offline'
+              ? isA<http.ClientException>()
+              : isA<FuelException>().having(
+                  (e) => e.code,
+                  'code',
+                  'selection_changed',
+                ),
+        ),
+      );
+      expect(posts, 0);
+      expect(
+        statusTargets,
+        alreadyCurrent || changedSource ? [] : ['candidate'],
+      );
+      expect(receiptReads, pendingReceipt ? 1 : 0);
+      if (pendingReceipt) {
+        expect((await journal.readEntry(deletionKey))?['status_only'], isTrue);
+      }
+      expect(await journal.readEntry('selection'), isNull);
+      expect((await client.refreshAccount()).id, account);
+    });
+  }
+
   test(
     'confirmed activation rejects a replacement candidate in the same browser profile',
     () async {
@@ -282,6 +393,12 @@ void main() {
                 'candidate_id': 'after',
               });
             }
+            if (path.endsWith('/auth/pair/status')) {
+              return http.Response(
+                '{"wire_version":1,"error":"unauthorized"}',
+                401,
+              );
+            }
             if (path.endsWith('/account'))
               return fuelReply(accountData(selected));
             return fuelReply({'account_id': selected});
@@ -437,9 +554,11 @@ void main() {
       final base = Uri.parse(
         'https://game.example/shared-${randomId()}/fuel/v1',
       );
+      var selectionReads = 0;
       FuelClient make(String actor) => FuelClient(
         base,
         httpClient: MockClient((request) async {
+          if (request.url.path.endsWith('/auth/selection')) selectionReads++;
           if (request.url.path.endsWith('/account'))
             return fuelReply(accountData(actor));
           return fuelReply({'account_id': actor});
@@ -464,6 +583,17 @@ void main() {
         a.postChat('global', '', 'wrong account'),
         throwsA(isA<FuelException>()),
       );
+      await expectLater(
+        a.redeemBasicTransfer('ACDEFH'),
+        throwsA(
+          isA<FuelException>().having(
+            (error) => error.code,
+            'code',
+            'identity_pending',
+          ),
+        ),
+      );
+      expect(selectionReads, 0);
       expect(b.account!.id, accountB);
       a.close();
       b.close();

@@ -24,7 +24,67 @@ http.Response basicReply() => http.Response.bytes(
   200,
 );
 
+http.Response unusedCandidate() =>
+    http.Response('{"wire_version":1,"error":"unauthorized"}', 401);
+
 void main() {
+  test('a failed Basic preflight leaves the live room attached', () async {
+    final storage = journal({});
+    final entered = Completer<void>(), release = Completer<void>();
+    final client = FuelClient(
+      Uri.parse('https://game.example'),
+      journal: storage,
+      httpClient: MockClient((request) async {
+        switch (request.url.path.substring('/fuel/v1/'.length)) {
+          case 'auth/prepare':
+            return fuelReply({});
+          case 'auth/bootstrap':
+            return fuelReply({'account_id': accountB});
+          case 'account':
+            return fuelReply(accountData(accountB));
+          case 'auth/selection':
+            return fuelReply({
+              'current': {'binding_id': 'old', 'account_id': accountB},
+              'candidate_id': 'new',
+            });
+          case 'auth/pair/status':
+            entered.complete();
+            await release.future;
+            throw http.ClientException('Candidate status unavailable');
+          default:
+            throw StateError('Unexpected request ${request.url.path}');
+        }
+      }),
+    );
+    final session = FuelSession(client);
+    final channel = TestChannel();
+    final live = FuelRealtime(channel, session);
+    addTearDown(() async {
+      if (!release.isCompleted) release.complete();
+      await live.close();
+      await session.dispose();
+      client.close();
+    });
+    await client.bootstrapBrowser();
+    session.select('room');
+    await live.connect();
+    channel.emit('ready', '0');
+    final generation = client.generation;
+    final failed = expectLater(
+      client.redeemBasicTransfer('ACDEFH'),
+      throwsA(isA<http.ClientException>()),
+    );
+    await entered.future;
+    channel.emit('during lookup', '1');
+    release.complete();
+    await failed;
+    expect(client.generation, generation);
+    expect(live.generation, 'g');
+    expect(session.current?.state['private'], 'during lookup');
+    expect(await storage.readEntry('selection'), isNull);
+    expect((await client.refreshAccount()).id, accountB);
+  });
+
   test(
     'ordinary room frames survive a delayed no-work transfer lookup',
     () async {
@@ -242,7 +302,9 @@ void main() {
                 throw http.ClientException('No response');
               case 'auth/pair/status':
                 expect(request.url.queryParameters['target_id'], 'candidate');
-                if (revokedTarget) return fuelReply({'status': 'retired'});
+                if (revoked && revokedTarget) {
+                  return fuelReply({'status': 'retired'});
+                }
                 return http.Response(
                   '{"wire_version":1,"error":"unauthorized"}',
                   401,
@@ -584,6 +646,8 @@ void main() {
                 'current': {'binding_id': 'old', 'account_id': accountB},
                 'candidate_id': 'new',
               });
+            case 'auth/pair/status':
+              return unusedCandidate();
             case 'auth/pair/redeem':
               return http.Response(
                 jsonEncode({'wire_version': 1, 'error': code}),
@@ -627,6 +691,7 @@ void main() {
           selected = accountA; // Browser applies the server's active cookie.
           return basicReply();
         }
+        if (path == 'auth/pair/status') return unusedCandidate();
         if (path == 'account') return fuelReply(accountData(selected));
         return fuelReply({});
       }),
@@ -638,6 +703,7 @@ void main() {
     expect(requests, [
       'auth/pair/prepare',
       'auth/selection',
+      'auth/pair/status',
       'auth/pair/redeem',
       'account',
     ]);
@@ -678,7 +744,7 @@ void main() {
               loseProfile = true;
               return basicReply();
             case 'auth/pair/status':
-              return basicReply();
+              return switched ? basicReply() : unusedCandidate();
             case 'auth/pair/activate':
               expect(
                 jsonDecode(request.body),
@@ -744,6 +810,8 @@ void main() {
               'current': {'binding_id': 'old', 'account_id': accountB},
               'candidate_id': 'new',
             });
+          case 'auth/pair/status':
+            return unusedCandidate();
           case 'auth/pair/redeem':
             return http.Response(
               '{"wire_version":1,"error":"invalid_code"}',
@@ -862,6 +930,7 @@ void main() {
             authorized = true;
             throw http.ClientException('Lost receipt');
           }
+          if (!authorized) return unusedCandidate();
           return fuelReply({
             'status': 'linked',
             'mode': 'basic',

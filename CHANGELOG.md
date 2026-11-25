@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.3 — check the candidate before starting a basic transfer
+
+Fresh basic redemptions reject the current binding and candidates with an existing transfer status before saving an attempt. Saved transfers still recover on their original candidate. Supports Fuel 0.4.0. [Usage](docs/USAGE.md#device-transfer).
+
 ## 0.4.2 — guard confirmed account selection
 
 `activateTransfer(expectedAccountId: ...)` checks the confirmed candidate against the account shown to the user. A browser tab also checks its current account and can reconcile a saved activation after the response is lost. A different selection requires a new choice. Supports Fuel 0.4.0. [Usage](docs/USAGE.md#device-transfer).
