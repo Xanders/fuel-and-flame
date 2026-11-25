@@ -153,6 +153,7 @@ class FuelClient {
   bool get analyticsSaving => _analyticsFlight != null;
   Object? analyticsError;
   bool _closed = false;
+  bool _identityAdmitted = false;
   bool _identityChanging = false;
   bool _identityUncertain = false;
   bool _preparingTransfer = false;
@@ -287,18 +288,17 @@ class FuelClient {
     Future<T> Function(int token) operation, {
     Future<void> Function(int token)? beforeTransition,
   }) {
-    if (_closed || _identityChanging)
+    if (_closed || _identityAdmitted)
       return Future.error(
         FuelException(_closed ? 'closed' : 'identity_changing'),
       );
-    _identityChanging = true;
+    _identityAdmitted = true;
     var token = generation;
-    var transitioned = false;
     void beginTransition() {
+      _identityChanging = true;
       _identityUncertain = true;
       _advanceIdentity();
       token = generation;
-      transitioned = true;
       _accountStatus = FuelAccountStatus.loading;
       _updates.notify();
     }
@@ -320,7 +320,7 @@ class FuelClient {
         return result;
       } catch (error) {
         _guard(token);
-        if (!transitioned) rethrow;
+        if (!_identityChanging) rethrow;
         lastError = error;
         final code = error is FuelException ? error.code : '';
         if (code == 'unauthorized') _identityUncertain = false;
@@ -335,6 +335,7 @@ class FuelClient {
         rethrow;
       } finally {
         _identityChanging = false;
+        _identityAdmitted = false;
         if (!_closed && generation == token) _updates.notify();
       }
     }();

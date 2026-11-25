@@ -11,6 +11,70 @@ import 'account_owner_test.dart'
 import 'operations_test.dart' show operation;
 
 void main() {
+  for (final deliverStorageEvent in [false, true]) {
+    test(
+      'queued no-work recovery invalidates an older tab (storage event: $deliverStorageEvent)',
+      () async {
+        final entered = Completer<void>(), finish = Completer<void>();
+        final base = Uri.parse(
+          'https://game.example/basic-locked-${randomId()}/fuel/v1',
+        );
+        var selected = accountB;
+        FuelClient make() => FuelClient(
+          base,
+          httpClient: MockClient((request) async {
+            final path = request.url.path;
+            if (path.endsWith('/auth/pair/redeem')) {
+              entered.complete();
+              await finish.future;
+              selected = accountA;
+              return fuelReply({
+                'status': 'linked',
+                'mode': 'basic',
+                'account_id': accountA,
+              });
+            }
+            if (path.endsWith('/auth/selection')) {
+              return fuelReply({
+                'current': {'binding_id': 'before', 'account_id': selected},
+                'candidate_id': 'after',
+              });
+            }
+            if (path.endsWith('/account'))
+              return fuelReply(accountData(selected));
+            return fuelReply({'account_id': selected});
+          }),
+        );
+        final first = make(), older = make();
+        try {
+          await first.bootstrapBrowser();
+          await older.bootstrapBrowser();
+          await first.prepareTransfer();
+          final committing = first.redeemBasicTransfer('ACDEFH');
+          await entered.future;
+          final stale = expectLater(
+            older.recoverBasicTransfer(),
+            throwsA(isA<FuelException>()),
+          );
+          if (deliverStorageEvent) {
+            web.window.dispatchEvent(web.StorageEvent('storage'));
+            await Future<void>.delayed(const Duration(milliseconds: 30));
+          }
+          finish.complete();
+          await committing;
+          await stale;
+          expect(first.account?.id, accountA);
+          expect(older.account, isNull);
+          expect(older.accountStatus, FuelAccountStatus.identityPending);
+        } finally {
+          if (!finish.isCompleted) finish.complete();
+          first.close();
+          older.close();
+        }
+      },
+    );
+  }
+
   test(
     'availability holds the browser identity lock and rejects a late result after identity invalidation',
     () async {

@@ -75,7 +75,7 @@ extension FuelIdentity on FuelClient {
     CredentialVault? vault,
     bool newAttempt = false,
   }) async {
-    if (_preparingTransfer || _identityChanging || _identityUncertain)
+    if (_preparingTransfer || _identityAdmitted || _identityUncertain)
       throw const FuelException('identity_changing');
     _preparingTransfer = true;
     final token = generation;
@@ -216,7 +216,11 @@ extension FuelIdentity on FuelClient {
 
   Future<void> _requireBasicSelection(int token) async {
     final intent = await _stored(() => _journal.readEntry('selection'), token);
-    if (intent == null) throw const FuelException('missing_transfer');
+    if (intent == null) {
+      if (_browserRecords != null) await _checkBrowserSelection();
+      _guard(token);
+      throw const FuelException('missing_transfer');
+    }
     if (intent['kind'] != 'basic')
       throw const FuelException('pending_identity');
   }
@@ -428,65 +432,82 @@ extension FuelIdentity on FuelClient {
   Future<Json> _changeSelection(
     String kind,
     CredentialVault? vault,
-  ) => _withIdentity((token) async {
-    if (vault != null) {
-      _vault = vault;
-      _journal = vault;
-    }
-    if (!_journal.durable)
-      throw const FuelException('durable_storage_required');
-    var intent = await _stored(() => _journal.readEntry('selection'), token);
-    if (intent != null && intent['kind'] != kind)
-      throw const FuelException('pending_identity');
-    if (intent == null) {
-      String? from, to;
-      if (_vault != null) {
-        from = (await _stored(() => _vault!.read('active'), token))?.id;
-        to = (await _stored(
-          () => _vault!.read(kind == 'switch' ? 'previous' : 'candidate'),
-          token,
-        ))?.id;
-        if (to == null)
-          throw FuelException(
-            kind == 'switch' ? 'missing_previous' : 'missing_candidate',
-          );
-        if (kind == 'activate') {
-          final proof = await _stored(() => _vault!.read('binding:$to'), token);
-          final status =
-              await _request('GET', 'auth/pair/status', authentication: proof)
-                  as Json;
-          if (status['status'] != 'linked')
-            throw const FuelException('confirmation_required');
-        }
-      } else {
-        final selected = await _request('GET', 'auth/selection') as Json;
-        from = (selected['current'] as Json?)?['binding_id'] as String?;
-        to = kind == 'activate'
-            ? selected['candidate_id'] as String?
-            : (selected['previous'] as Json?)?['binding_id'] as String?;
-        if (to == null || kind == 'switch' && to == from)
-          throw FuelException(
-            kind == 'switch' ? 'missing_previous' : 'missing_candidate',
-          );
+  ) => _withIdentity(
+    (token) async {
+      if (vault != null) {
+        _vault = vault;
+        _journal = vault;
       }
-      final proposed = <String, dynamic>{
-        'id': randomId(),
-        'kind': kind,
-        'from': from,
-        'to': to,
-      };
-      intent = await _stored(
-        () => _journal.updateEntry('selection', (old) => old ?? proposed),
-        token,
-      );
-      if (intent!['kind'] != kind)
+      if (!_journal.durable)
+        throw const FuelException('durable_storage_required');
+      var intent = await _stored(() => _journal.readEntry('selection'), token);
+      if (intent != null && intent['kind'] != kind)
         throw const FuelException('pending_identity');
-    }
-    final value = await _resumeSelection(token);
-    if (value == null) throw const FuelException('pending_identity');
-    _publishAccount(value, token);
-    return <String, dynamic>{'account_id': value.id};
-  });
+      if (intent == null) {
+        String? from, to;
+        if (_vault != null) {
+          from = (await _stored(() => _vault!.read('active'), token))?.id;
+          to = (await _stored(
+            () => _vault!.read(kind == 'switch' ? 'previous' : 'candidate'),
+            token,
+          ))?.id;
+          if (to == null)
+            throw FuelException(
+              kind == 'switch' ? 'missing_previous' : 'missing_candidate',
+            );
+          if (kind == 'activate') {
+            final proof = await _stored(
+              () => _vault!.read('binding:$to'),
+              token,
+            );
+            final status =
+                await _request('GET', 'auth/pair/status', authentication: proof)
+                    as Json;
+            if (status['status'] != 'linked')
+              throw const FuelException('confirmation_required');
+          }
+        } else {
+          final selected = await _request('GET', 'auth/selection') as Json;
+          from = (selected['current'] as Json?)?['binding_id'] as String?;
+          to = kind == 'activate'
+              ? selected['candidate_id'] as String?
+              : (selected['previous'] as Json?)?['binding_id'] as String?;
+          if (to == null || kind == 'switch' && to == from)
+            throw FuelException(
+              kind == 'switch' ? 'missing_previous' : 'missing_candidate',
+            );
+        }
+        final proposed = <String, dynamic>{
+          'id': randomId(),
+          'kind': kind,
+          'from': from,
+          'to': to,
+        };
+        intent = await _stored(
+          () => _journal.updateEntry('selection', (old) => old ?? proposed),
+          token,
+        );
+        if (intent!['kind'] != kind)
+          throw const FuelException('pending_identity');
+      }
+      final value = await _resumeSelection(token);
+      if (value == null) throw const FuelException('pending_identity');
+      _publishAccount(value, token);
+      return <String, dynamic>{'account_id': value.id};
+    },
+    beforeTransition: kind == 'switch'
+        ? (token) async {
+            final storage = vault ?? _journal;
+            final pending = await _stored(
+              () => storage.readEntry('selection'),
+              token,
+            );
+            if (pending != null && pending['kind'] != kind) {
+              throw const FuelException('pending_identity');
+            }
+          }
+        : null,
+  );
 
   Future<FuelAccount?> _resumeSelection(int token) async {
     final intent = await _stored(() => _journal.readEntry('selection'), token);

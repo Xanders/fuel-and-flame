@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:fuel_client/fuel_client.dart';
@@ -8,6 +9,7 @@ import 'package:test/test.dart';
 import 'account_owner_test.dart'
     show accountA, accountB, accountData, fuelReply;
 import 'operations_test.dart' show journal;
+import 'review_regression_test.dart' show TestChannel;
 
 final receipt = <String, dynamic>{
   'id': 'transfer',
@@ -23,6 +25,65 @@ http.Response basicReply() => http.Response.bytes(
 );
 
 void main() {
+  test(
+    'ordinary room frames survive a delayed no-work transfer lookup',
+    () async {
+      final records = <String, String>{};
+      final entered = Completer<void>(), release = Completer<void>();
+      var delay = false;
+      final storage = RecordJournal(
+        read: (key) async {
+          if (delay) {
+            if (!entered.isCompleted) entered.complete();
+            await release.future;
+          }
+          return records[key];
+        },
+        write: (key, value) async => records[key] = value,
+      );
+      final client = FuelClient(
+        Uri.parse('https://game.example'),
+        journal: storage,
+        httpClient: MockClient(
+          (request) async => request.url.path.endsWith('/account')
+              ? fuelReply(accountData(accountA))
+              : fuelReply({'account_id': accountA}),
+        ),
+      );
+      final session = FuelSession(client)..select('room');
+      final channel = TestChannel();
+      final live = FuelRealtime(channel, session);
+      addTearDown(() async {
+        if (!release.isCompleted) release.complete();
+        await live.close();
+        await session.dispose();
+        client.close();
+      });
+      await client.bootstrapBrowser();
+      session.select('room');
+      await live.connect();
+      channel.emit('ready', '0');
+      delay = true;
+      final noWork = expectLater(
+        client.recoverBasicTransfer(),
+        throwsA(
+          isA<FuelException>().having(
+            (e) => e.code,
+            'code',
+            'missing_transfer',
+          ),
+        ),
+      );
+      await entered.future;
+      channel.emit('during lookup', '1');
+      release.complete();
+      await noWork;
+      expect(live.generation, 'g');
+      expect(session.current?.state['private'], 'during lookup');
+      expect((await client.refreshAccount()).id, accountA);
+    },
+  );
+
   for (final linked in [false, true]) {
     test(
       'an unanswered deletion cannot strand transfer recovery (linked: $linked)',
@@ -437,6 +498,10 @@ void main() {
                   'account_id': switched ? accountA : accountB,
                 },
                 'candidate_id': 'candidate',
+                'previous': {
+                  'binding_id': 'retained',
+                  'account_id': 'cccccccccccccccccccccccccccccccc',
+                },
               });
             case 'auth/pair/redeem':
               posts++;
@@ -468,6 +533,19 @@ void main() {
       final restarted = open();
       addTearDown(restarted.close);
       await restarted.bootstrapBrowser();
+      expect((await restarted.refreshAccount()).id, accountB);
+      expect((await shared.readEntry('selection'))?['to'], 'candidate');
+      expect(await restarted.hasPreviousAccount(), isTrue);
+      await expectLater(
+        restarted.switchPrevious(),
+        throwsA(
+          isA<FuelException>().having(
+            (e) => e.code,
+            'code',
+            'pending_identity',
+          ),
+        ),
+      );
       expect((await restarted.refreshAccount()).id, accountB);
       expect((await shared.readEntry('selection'))?['to'], 'candidate');
       await expectLater(
