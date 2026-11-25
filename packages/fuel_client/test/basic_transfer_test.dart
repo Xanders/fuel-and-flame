@@ -23,6 +23,119 @@ http.Response basicReply() => http.Response.bytes(
 );
 
 void main() {
+  for (final linked in [false, true]) {
+    test('deleting B reconciles a lost transfer (linked: $linked)', () async {
+      final shared = journal({});
+      const other = 'cccccccccccccccccccccccccccccccc';
+      String? active = 'old';
+      var deleted = false, committed = false;
+      FuelClient open() => FuelClient(
+        Uri.parse('https://game.example'),
+        journal: shared,
+        httpClient: MockClient((request) async {
+          final path = request.url.path.substring('/fuel/v1/'.length);
+          final id = switch (active) {
+            'old' => accountB,
+            'incoming' => accountA,
+            _ => other,
+          };
+          switch (path) {
+            case 'auth/bootstrap':
+              return fuelReply({'account_id': id});
+            case 'auth/selection':
+              return fuelReply({
+                'current': active == null
+                    ? null
+                    : {'binding_id': active, 'account_id': id},
+                'previous': {'binding_id': 'retained', 'account_id': other},
+                'candidate_id': deleted ? null : 'incoming',
+              });
+            case 'auth/pair/redeem':
+              throw http.ClientException('No reply');
+            case 'auth/pair/status':
+              if (committed) return basicReply();
+              return http.Response(
+                '{"wire_version":1,"error":"unauthorized"}',
+                401,
+              );
+            case 'auth/pair/activate':
+              active = 'incoming';
+              return fuelReply({'account_id': accountA});
+            case 'auth/delete/status':
+              return fuelReply({'status': 'unknown'});
+            case 'auth/delete/with-transfer':
+              expect(
+                jsonDecode(request.body),
+                containsPair('abandon_candidate_id', 'incoming'),
+              );
+              if (linked) {
+                return http.Response(
+                  '{"wire_version":1,"error":"transfer_completed"}',
+                  400,
+                );
+              }
+              active = null;
+              deleted = true;
+              return fuelReply({
+                'status': 'deleted',
+                'removed_bindings': ['old', 'incoming'],
+              });
+            case 'auth/switch':
+              expect(jsonDecode(request.body), {
+                'from': null,
+                'to': 'retained',
+              });
+              active = 'retained';
+              return fuelReply({'account_id': other});
+            case 'account':
+              return fuelReply(accountData(id));
+          }
+          return fuelReply({});
+        }),
+      );
+      final first = open();
+      addTearDown(first.close);
+      await first.bootstrapBrowser();
+      await first.prepareTransfer();
+      await expectLater(
+        first.redeemBasicTransfer('ACDEFH'),
+        throwsA(isA<http.ClientException>()),
+      );
+      final prior = open();
+      addTearDown(prior.close);
+      await prior.bootstrapBrowser();
+      expect(prior.account?.id, accountB);
+      committed = linked;
+      if (linked) {
+        await expectLater(
+          prior.deleteAccount(confirmed: true),
+          throwsA(
+            isA<FuelException>().having(
+              (e) => e.code,
+              'code',
+              'transfer_completed',
+            ),
+          ),
+        );
+        expect(await shared.readEntry('account:$accountB:deletion'), isNull);
+      } else {
+        await prior.deleteAccount(confirmed: true);
+        expect(await shared.readEntry('selection'), isNull);
+      }
+      final restarted = open();
+      addTearDown(restarted.close);
+      final result = await restarted.bootstrapBrowser();
+      if (linked) {
+        expect(result['account_id'], accountA);
+        expect(deleted, isFalse);
+      } else {
+        expect(result['status'], 'deleted');
+        await restarted.switchPrevious();
+        expect(restarted.account?.id, other);
+      }
+    });
+  }
+
   test(
     'a revoked selected target restores the exact saved prior guest',
     () async {

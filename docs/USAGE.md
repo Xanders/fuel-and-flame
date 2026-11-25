@@ -79,6 +79,8 @@ Identity admission is synchronous and exclusive before any await. Transitions cl
 
 `deleteAccount(confirmed:true)` needs a loaded account and saved random deletion proof. A timeout is unknown, not success. recoverDeletion or bootstrap checks that proof after restart, even when the old login proof is gone. Confirmed deletion atomically forgets only returned removed binding IDs and that account's journal; another retained account is preserved. A durable deleted marker prevents automatic guest recreation. `game.start(newGuest:true)` is an explicit new-guest intent after confirmed deletion; switchPrevious can instead recover a surviving guest. Revoke the last active binding only with confirmedLast:true.
 
+If B chooses to delete its original guest while a basic transfer is unresolved, the SDK asks Fuel to retire the candidate with that deletion, then clears the pending selection from the deletion receipt. A `transfer_completed` error means the link was already made and the deletion did not run. Resume the transfer with `recoverBasicTransfer()` or startup. Select the intended account and confirm deletion again if the user still wants it.
+
 ## Permanent actions and confirmed results
 
 ```dart
