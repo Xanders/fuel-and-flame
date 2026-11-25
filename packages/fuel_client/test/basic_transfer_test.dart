@@ -534,6 +534,7 @@ void main() {
       addTearDown(restarted.close);
       await restarted.bootstrapBrowser();
       expect((await restarted.refreshAccount()).id, accountB);
+      expect(restarted.recoveredBasicTransferOnStartup, isFalse);
       expect((await shared.readEntry('selection'))?['to'], 'candidate');
       expect(await restarted.hasPreviousAccount(), isTrue);
       await expectLater(
@@ -718,9 +719,14 @@ void main() {
       );
       await other.bootstrapBrowser();
       expect(other.account?.id, accountA);
+      expect(other.recoveredBasicTransferOnStartup, isTrue);
       expect(await shared.readEntry('selection'), isNull);
       expect(prepares, 1);
       expect(redeems, 1);
+      expect((await other.refreshAccount()).id, accountA);
+      expect(other.recoveredBasicTransferOnStartup, isTrue);
+      expect(await other.bootstrapBrowser(), {'account_id': accountA});
+      expect(other.recoveredBasicTransferOnStartup, isFalse);
     },
   );
 
@@ -761,6 +767,75 @@ void main() {
     expect(client.account?.id, accountB);
     expect((await client.refreshAccount()).id, accountB);
   });
+
+  test(
+    'native controller reports saved Basic even when room startup fails',
+    () async {
+      final records = <String, String>{};
+      final vault = RecordCredentialVault(
+        read: (key) async => records[key],
+        write: (key, value) async => records[key] = value,
+      );
+      final previous = FuelCredential.create(),
+          candidate = FuelCredential.create();
+      await vault.activate(previous, accountId: accountB);
+      await vault.write('candidate', candidate);
+      await vault.writeEntry('selection', {
+        'id': randomId(),
+        'kind': 'basic',
+        'from': previous.id,
+        'to': candidate.id,
+      });
+      final client = FuelClient(
+        Uri.parse('https://game.example'),
+        httpClient: MockClient((request) async {
+          final path = request.url.path.substring('/fuel/v1/'.length);
+          switch (path) {
+            case 'auth/pair/status':
+              expect(
+                request.headers['Authorization'],
+                'Fuel ${candidate.id}:${candidate.secret}',
+              );
+              return fuelReply({
+                'status': 'linked',
+                'mode': 'basic',
+                'account_id': accountA,
+              });
+            case 'account':
+              expect(
+                request.headers['Authorization'],
+                'Fuel ${candidate.id}:${candidate.secret}',
+              );
+              return fuelReply(accountData(accountA));
+            case 'auth/bootstrap':
+              return fuelReply({'account_id': accountA});
+            default:
+              return http.Response(
+                '{"wire_version":1,"error":"maintenance"}',
+                503,
+              );
+          }
+        }),
+      );
+      final game = FuelGameController(client);
+      addTearDown(() async {
+        await game.dispose();
+        client.close();
+      });
+      await expectLater(
+        game.start(vault: vault),
+        throwsA(
+          isA<FuelException>().having((e) => e.code, 'code', 'maintenance'),
+        ),
+      );
+      expect(game.client.account?.id, accountA);
+      expect(game.client.recoveredBasicTransferOnStartup, isTrue);
+      expect(await vault.readEntry('selection'), isNull);
+      expect((await vault.read('previous'))?.id, previous.id);
+      expect(await client.bootstrapNative(vault), {'account_id': accountA});
+      expect(client.recoveredBasicTransferOnStartup, isFalse);
+    },
+  );
 
   test('lost native response recovers the saved proof and keeps B', () async {
     final records = <String, String>{};

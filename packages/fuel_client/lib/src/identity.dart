@@ -492,8 +492,8 @@ extension FuelIdentity on FuelClient {
       }
       final value = await _resumeSelection(token);
       if (value == null) throw const FuelException('pending_identity');
-      _publishAccount(value, token);
-      return <String, dynamic>{'account_id': value.id};
+      _publishAccount(value.account, token);
+      return <String, dynamic>{'account_id': value.account.id};
     },
     beforeTransition: kind == 'switch'
         ? (token) async {
@@ -509,22 +509,32 @@ extension FuelIdentity on FuelClient {
         : null,
   );
 
-  Future<FuelAccount?> _resumeSelection(int token) async {
+  Future<Json?> _resumeStartupSelection(int token) async {
+    final resumed = await _resumeSelection(token);
+    if (resumed == null) return null;
+    _guard(token);
+    _recoveredBasicTransferOnStartup = resumed.recoveredBasicTransfer;
+    _publishAccount(resumed.account, token);
+    return <String, dynamic>{'account_id': resumed.account.id};
+  }
+
+  Future<({FuelAccount account, bool recoveredBasicTransfer})?>
+  _resumeSelection(int token) async {
     final intent = await _stored(() => _journal.readEntry('selection'), token);
     if (intent == null) return null;
     if (intent['kind'] == 'basic') {
       try {
         final (value, _) = await _finishBasicSelection(intent, token, null);
-        return value;
+        return (account: value, recoveredBasicTransfer: true);
       } on FuelException catch (error) {
         final retired = error.code == 'transfer_retired';
         if (!retired && error.code != 'transfer_pending') rethrow;
         final previous = await _verifiedBasicSource(intent, token);
-        if (retired) {
-          await _discardBasicSelection(intent, token);
-          return previous;
+        if (retired) await _discardBasicSelection(intent, token);
+        if (previous != null) {
+          return (account: previous, recoveredBasicTransfer: false);
         }
-        if (previous != null) return previous;
+        if (retired) return null;
         try {
           final result =
               await _request(
@@ -540,7 +550,7 @@ extension FuelIdentity on FuelClient {
         } on FuelException catch (settlement) {
           if (settlement.code != 'transfer_completed') rethrow;
           final (value, _) = await _finishBasicSelection(intent, token, null);
-          return value;
+          return (account: value, recoveredBasicTransfer: true);
         }
       }
     }
@@ -588,7 +598,7 @@ extension FuelIdentity on FuelClient {
           token,
         );
       }
-      return value;
+      return (account: value, recoveredBasicTransfer: false);
     } on FuelException catch (error) {
       _guard(token);
       if (error.status >= 400 &&
@@ -649,7 +659,7 @@ extension FuelIdentity on FuelClient {
       _accountStatus = FuelAccountStatus.deleted;
     } else {
       final selected = await _resumeSelection(token);
-      _publishAccount(selected ?? await _readAccount(token), token);
+      _publishAccount(selected?.account ?? await _readAccount(token), token);
     }
   });
 

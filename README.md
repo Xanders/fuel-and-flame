@@ -38,13 +38,13 @@ dependencies:
   fuel_flutter:
     git:
       url: https://github.com/Xanders/fuel-and-flame.git
-      ref: v0.4.0
+      ref: v0.4.1
       path: packages/fuel_flutter
 dependency_overrides:
   fuel_client:
     git:
       url: https://github.com/Xanders/fuel-and-flame.git
-      ref: v0.4.0
+      ref: v0.4.1
       path: packages/fuel_client
 ```
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.1 — report a transfer recovered on startup
+
+`FuelClient.recoveredBasicTransferOnStartup` reports when browser or native startup confirmed a saved basic transfer and selected the transferred account. It is scoped to the current identity generation. Supports Fuel 0.4.0. [Usage](docs/USAGE.md#device-transfer).
+
 ## 0.4.0 — basic device transfer
 
 With Fuel 0.4.0, `issuePair(supportsBasic: true)` supports a basic-mode server. `redeemBasicTransfer` links and selects the prepared candidate in one user action and returns the shared server completion notice. `recoverBasicTransfer` checks the same proof after an unknown result without resubmitting the code. The confirmed transfer methods remain available. [Usage](docs/USAGE.md#device-transfer).

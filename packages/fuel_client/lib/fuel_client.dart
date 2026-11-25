@@ -134,6 +134,12 @@ class FuelClient {
   Stream<void> get updates => _updates.stream;
   FuelAccount? _account;
   FuelAccount? get account => _account;
+  bool _recoveredBasicTransferOnStartup = false;
+
+  /// Whether startup in the current identity generation selected an account
+  /// from a saved, completed basic transfer.
+  bool get recoveredBasicTransferOnStartup => _recoveredBasicTransferOnStartup;
+
   FuelAccountStatus _accountStatus = FuelAccountStatus.idle;
   FuelAccountStatus get accountStatus => _accountStatus;
   Object? lastError;
@@ -232,6 +238,7 @@ class FuelClient {
     _identityGeneration++;
     _accountVersion++;
     _account = null;
+    _recoveredBasicTransferOnStartup = false;
     _accountFlight = null;
     _recoveryFlight = null;
     _actionFlight = null;
@@ -529,11 +536,8 @@ class FuelClient {
     _journal = vault;
     _credential = await _stored(() => vault.read('active'), token);
     await _resumeDeletions(token);
-    final resumed = await _resumeSelection(token);
-    if (resumed != null) {
-      _publishAccount(resumed, token);
-      return <String, dynamic>{'account_id': resumed.id};
-    }
+    final resumed = await _resumeStartupSelection(token);
+    if (resumed != null) return resumed;
     final marker = await _stored(() => vault.readEntry('identity'), token);
     final saved = await _stored(() => vault.read('active'), token);
     if (saved == null && marker?['kind'] == 'deleted' && !newGuest) {
@@ -584,11 +588,8 @@ class FuelClient {
     _journal = _browserJournal;
     _credential = null;
     await _resumeDeletions(token);
-    final resumed = await _resumeSelection(token);
-    if (resumed != null) {
-      _publishAccount(resumed, token);
-      return <String, dynamic>{'account_id': resumed.id};
-    }
+    final resumed = await _resumeStartupSelection(token);
+    if (resumed != null) return resumed;
     final marker = await _stored(() => _journal.readEntry('identity'), token);
     if (marker?['kind'] == 'deleted' && !newGuest) {
       _accountStatus = FuelAccountStatus.deleted;
